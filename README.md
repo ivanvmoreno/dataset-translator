@@ -1,7 +1,7 @@
 # `dataset-translator`
 
-![PyPI version](https://badge.fury.io/py/dataset-translator.svg?icon=si%3Apython)
-![GitHub issues](https://img.shields.io/github/issues/ivanvmoreno/dataset-translator)
+[![PyPI version](https://badge.fury.io/py/dataset-translator.svg?icon=si%3Apython)](https://pypi.org/project/dataset-translator/)
+[![GitHub issues](https://img.shields.io/github/issues/ivanvmoreno/dataset-translator)](https://github.com/ivanvmoreno/dataset-translator/issues)
 ![License](https://img.shields.io/github/license/ivanvmoreno/dataset-translator)
 
 A robust CLI tool for translating text columns in datasets using Google Translate, with support for protected words, retries, and checkpoint recovery.
