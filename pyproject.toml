@@ -1,7 +1,7 @@
 [project]
 name = "dataset-translator"
 authors = [{ name = "Iván Moreno", email = "ivan@ivan.build" }]
-version = "0.1.1"
+version = "0.1.2"
 description = "⚡️ Efficient dataset translation using Google Translate's API"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -19,12 +19,18 @@ license = { text = "MIT" }
 Repository = "https://github.com/ivanvmoreno/dataset-translator"
 Issues = "https://github.com/ivanvmoreno/dataset-translator/issues"
 
+[project.scripts]
+dataset-translator = "main:app"
+
 [dependency-groups]
 dev = ["black>=25.1.0", "isort>=6.0.0"]
 
 [build-system]
 requires = ["setuptools>=68.0.0", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+license-files = []
 
 [tool.black]
 line-length = 80
