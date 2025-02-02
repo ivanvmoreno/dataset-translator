@@ -1,6 +1,6 @@
 [project]
 name = "dataset-translator"
-authors = ["Iván Moreno <ivan@ivan.build>"]
+authors = [{ name = "Iván Moreno", email = "ivan@ivan.build" }]
 version = "0.1.0"
 description = "Translate any dataset using Google Translate API"
 readme = "README.md"
@@ -12,6 +12,11 @@ dependencies = [
     "tqdm>=4.67.1",
     "typer>=0.15.1",
 ]
+keywords = ["dataset", "translate", "hf", "google", "api"]
+
+[project.urls]
+Repository = "https://github.com/ivanvmoreno/dataset-translator"
+Issues = "https://github.com/ivanvmoreno/dataset-translator/issues"
 
 [dependency-groups]
 dev = ["black>=25.1.0", "isort>=6.0.0"]
