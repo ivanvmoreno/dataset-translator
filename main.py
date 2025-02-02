@@ -21,12 +21,20 @@ def load_protected_words(protected_words_arg: Optional[str]) -> List[str]:
     if protected_words_arg.startswith("@"):
         file_path = Path(protected_words_arg[1:])
         if not file_path.exists():
-            raise FileNotFoundError(f"Protected words file not found: {file_path}")
+            raise FileNotFoundError(
+                f"Protected words file not found: {file_path}"
+            )
         return [
-            line.strip() for line in file_path.read_text().splitlines() if line.strip()
+            line.strip()
+            for line in file_path.read_text().splitlines()
+            if line.strip()
         ]
     else:
-        return [word.strip() for word in protected_words_arg.split(",") if word.strip()]
+        return [
+            word.strip()
+            for word in protected_words_arg.split(",")
+            if word.strip()
+        ]
 
 
 def replace_protected_words(
@@ -44,10 +52,14 @@ def replace_protected_words(
     return text, placeholders
 
 
-def restore_protected_words(translated_text: str, placeholders: Dict[str, str]) -> str:
+def restore_protected_words(
+    translated_text: str, placeholders: Dict[str, str]
+) -> str:
     """Restores protected words using regex matching."""
     for placeholder, original in placeholders.items():
-        pattern = re.compile(r"\s*".join(map(re.escape, placeholder)), re.IGNORECASE)
+        pattern = re.compile(
+            r"\s*".join(map(re.escape, placeholder)), re.IGNORECASE
+        )
         translated_text = pattern.sub(original, translated_text)
     return translated_text
 
@@ -102,7 +114,10 @@ async def process_batch(
 
         translated = restore_protected_words(translation_obj.text, ph)
         # Simple heuristic for "failed" translation, but no API error
-        if not translated.strip() or translated.strip() == original_text.strip():
+        if (
+            not translated.strip()
+            or translated.strip() == original_text.strip()
+        ):
             failures.append(
                 {
                     "original_index": row_idx,
@@ -193,15 +208,21 @@ async def process_texts(
 
         new_success_checkpoint = merge_checkpoints(checkpoint_dir, file_format)
         newly_translated = {
-            (idx, col) for idx, cols in new_success_checkpoint.items() for col in cols
+            (idx, col)
+            for idx, cols in new_success_checkpoint.items()
+            for col in cols
         }
         skip_set.update(newly_translated)
         all_failures = cycle_failures
 
     if all_failures:
-        final_failures_path = checkpoint_dir / f"translation_failures.{file_format}"
+        final_failures_path = (
+            checkpoint_dir / f"translation_failures.{file_format}"
+        )
         pd.DataFrame(all_failures).to_parquet(final_failures_path)
-        print(f"Some items still failed after {failure_retry_cycles} retry cycles.")
+        print(
+            f"Some items still failed after {failure_retry_cycles} retry cycles."
+        )
         print(f"Saved those failures to: {final_failures_path}")
 
 
@@ -220,7 +241,9 @@ async def _translate_in_batches(
     is_retry_cycle: bool = False,
 ) -> List[Dict]:
     semaphore = asyncio.Semaphore(max_concurrency)
-    progress_desc = "Translating (retry cycle)" if is_retry_cycle else "Translating"
+    progress_desc = (
+        "Translating (retry cycle)" if is_retry_cycle else "Translating"
+    )
     progress = tqdm(total=len(items), desc=progress_desc)
 
     def chunked(lst, n):
@@ -271,7 +294,8 @@ async def _translate_in_batches(
             checkpoint_counter += 1
             save_checkpoint(
                 results_buffer,
-                checkpoint_dir / f"checkpoint_{checkpoint_counter:04d}.{file_format}",
+                checkpoint_dir
+                / f"checkpoint_{checkpoint_counter:04d}.{file_format}",
                 file_format,
             )
             results_buffer = []
@@ -280,7 +304,8 @@ async def _translate_in_batches(
         checkpoint_counter += 1
         save_checkpoint(
             results_buffer,
-            checkpoint_dir / f"checkpoint_{checkpoint_counter:04d}.{file_format}",
+            checkpoint_dir
+            / f"checkpoint_{checkpoint_counter:04d}.{file_format}",
             file_format,
         )
 
@@ -302,7 +327,9 @@ def detect_file_format(file_path: Path) -> Literal["csv", "parquet"]:
         raise ValueError(f"Unsupported file format: {file_path.suffix}")
 
 
-def load_dataset(file_path: Path, file_format: Optional[str] = None) -> pd.DataFrame:
+def load_dataset(
+    file_path: Path, file_format: Optional[str] = None
+) -> pd.DataFrame:
     """Load dataset from CSV or Parquet file."""
     if file_format is None or file_format == "auto":
         file_format = detect_file_format(file_path)
@@ -315,7 +342,9 @@ def load_dataset(file_path: Path, file_format: Optional[str] = None) -> pd.DataF
         raise ValueError(f"Unsupported file format: {file_format}")
 
 
-def save_dataset(df: pd.DataFrame, file_path: Path, file_format: Optional[str] = None):
+def save_dataset(
+    df: pd.DataFrame, file_path: Path, file_format: Optional[str] = None
+):
     """Save dataset to CSV or Parquet file."""
     if file_format is None or file_format == "auto":
         file_format = detect_file_format(file_path)
@@ -347,7 +376,9 @@ def merge_checkpoints(
         df = load_dataset(ckpt, file_format)
         for _, row in df.iterrows():
             if "translated_text" in row:
-                merged[row["original_index"]][row["column"]] = row["translated_text"]
+                merged[row["original_index"]][row["column"]] = row[
+                    "translated_text"
+                ]
     return merged
 
 
@@ -365,18 +396,25 @@ async def translate_dataset(
     max_retries: int = 3,
     failure_retry_cycles: int = 1,
     only_failed: bool = False,
+    proxy: Optional[str] = None,
 ):
     """Main translation workflow with --only-failed support."""
     df = load_dataset(input_path, file_format)
 
     if only_failed:
-        failures_path = save_dir / "checkpoints" / f"translation_failures.{file_format}"
+        failures_path = (
+            save_dir / "checkpoints" / f"translation_failures.{file_format}"
+        )
         if not failures_path.exists():
-            raise FileNotFoundError(f"No failures file found at {failures_path}")
+            raise FileNotFoundError(
+                f"No failures file found at {failures_path}"
+            )
         failures_df = load_dataset(failures_path, file_format)
         required_cols = ["original_index", "column", "original_text"]
         if not all(col in failures_df.columns for col in required_cols):
-            raise ValueError(f"Failures file missing required columns: {required_cols}")
+            raise ValueError(
+                f"Failures file missing required columns: {required_cols}"
+            )
         if columns:
             failures_df = failures_df[failures_df["column"].isin(columns)]
         items = [
@@ -385,7 +423,9 @@ async def translate_dataset(
         ]
     else:
         if not columns:
-            raise ValueError("Columns must be specified when not using --only-failed")
+            raise ValueError(
+                "Columns must be specified when not using --only-failed"
+            )
         items = []
         for idx, row in df.iterrows():
             for col in columns:
@@ -400,9 +440,15 @@ async def translate_dataset(
         print("No items to translate.")
         return
 
+    translator_args = {}
+    if proxy:
+        translator_args["proxy"] = proxy
+
+    translator = Translator(**translator_args)
+
     await process_texts(
         items=items,
-        translator=Translator(),
+        translator=translator,
         source_lang=source_lang,
         target_lang=target_lang,
         protected_words=protected_words,
@@ -437,7 +483,9 @@ def main(
     input_path: Path = typer.Argument(
         ..., help="Path to input dataset (CSV or Parquet)"
     ),
-    save_dir: Path = typer.Argument(..., help="Directory to save translated data"),
+    save_dir: Path = typer.Argument(
+        ..., help="Directory to save translated data"
+    ),
     source_lang: str = typer.Argument(..., help="Source language code"),
     target_lang: str = typer.Argument(..., help="Target language code"),
     columns: Optional[List[str]] = typer.Option(
@@ -450,7 +498,7 @@ def main(
         None,
         "--protected-words",
         "-p",
-        help="Comma-separated list or @file.txt of protected words",
+        help="Comma-separated list or @file.txt file with protected words/phrases. See docs for format.",
     ),
     file_format: str = typer.Option(
         "auto",
@@ -484,6 +532,11 @@ def main(
         "--only-failed",
         help="Process only previously failed translations from checkpoint directory",
     ),
+    proxy: Optional[str] = typer.Option(
+        None,
+        "--proxy",
+        help="Proxy URL to use for translation requests. Protocol must be specified. Example: http://<ip>:<port>",
+    ),
 ):
     """
     Translate columns in a dataset with support for retrying failed items.
@@ -514,6 +567,7 @@ def main(
             max_retries=max_retries,
             failure_retry_cycles=failure_retry_cycles,
             only_failed=only_failed,
+            proxy=proxy,
         )
     )
 
