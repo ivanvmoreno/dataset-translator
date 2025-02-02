@@ -5,7 +5,7 @@ import re
 import uuid
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Literal, Optional, Tuple
 
 import pandas as pd
 import typer
@@ -282,22 +282,63 @@ async def _translate_in_batches(
     return all_failures
 
 
-def save_checkpoint(data: List[Dict], path: Path):
+def detect_file_format(file_path: Path) -> Literal["csv", "parquet"]:
+    """Detect the file format based on the file extension."""
+    if file_path.suffix.lower() == ".csv":
+        return "csv"
+    elif file_path.suffix.lower() in (".parquet", ".pq"):
+        return "parquet"
+    elif file_path.is_dir():
+        parquet_files = list(file_path.glob("*.parquet"))
+        if parquet_files:
+            return "parquet"
+    else:
+        raise ValueError(f"Unsupported file format: {file_path.suffix}")
+
+
+def load_dataset(file_path: Path, file_format: Optional[str] = None) -> pd.DataFrame:
+    """Load dataset from CSV or Parquet file."""
+    if file_format is None or file_format == "auto":
+        file_format = detect_file_format(file_path)
+
+    if file_format == "csv":
+        return pd.read_csv(file_path)
+    elif file_format == "parquet":
+        return pd.read_parquet(file_path)
+    else:
+        raise ValueError(f"Unsupported file format: {file_format}")
+
+
+def save_dataset(df: pd.DataFrame, file_path: Path, file_format: Optional[str] = None):
+    """Save dataset to CSV or Parquet file."""
+    if file_format is None or file_format == "auto":
+        file_format = detect_file_format(file_path)
+
+    if file_format == "csv":
+        df.to_csv(file_path, index=False)
+    elif file_format == "parquet":
+        df.to_parquet(file_path, index=False)
+    else:
+        raise ValueError(f"Unsupported file format: {file_format}")
+
+
+def save_checkpoint(data: List[Dict], path: Path, file_format: str):
     """Save checkpoint file with transaction safety."""
     if not data:
         return
     temp_path = path.with_suffix(".tmp")
-    pd.DataFrame(data).to_parquet(temp_path)
+    df = pd.DataFrame(data)
+    save_dataset(df, temp_path, file_format)
     temp_path.rename(path)
 
 
-def merge_checkpoints(checkpoint_dir: Path) -> Dict[int, Dict[str, str]]:
-    """
-    Combine all checkpoint files into a single translation mapping.
-    """
+def merge_checkpoints(
+    checkpoint_dir: Path, file_format: str
+) -> Dict[int, Dict[str, str]]:
+    """Combine all checkpoint files into a single translation mapping."""
     merged = defaultdict(dict)
-    for ckpt in checkpoint_dir.glob("checkpoint_*.parquet"):
-        df = pd.read_parquet(ckpt)
+    for ckpt in checkpoint_dir.glob(f"checkpoint_*.{file_format}"):
+        df = load_dataset(ckpt, file_format)
         for _, row in df.iterrows():
             if "translated_text" in row:
                 merged[row["original_index"]][row["column"]] = row["translated_text"]
@@ -311,6 +352,7 @@ async def translate_dataset(
     target_lang: str,
     columns: Optional[List[str]],
     protected_words: List[str],
+    file_format: str,
     batch_size: int = 20,
     max_concurrency: int = 10,
     checkpoint_step: int = 100,
@@ -319,13 +361,13 @@ async def translate_dataset(
     only_failed: bool = False,
 ):
     """Main translation workflow with --only-failed support."""
-    df = pd.read_parquet(input_path)
+    df = load_dataset(input_path, file_format)
 
     if only_failed:
-        failures_path = save_dir / "checkpoints" / "translation_failures.parquet"
+        failures_path = save_dir / "checkpoints" / f"translation_failures.{file_format}"
         if not failures_path.exists():
             raise FileNotFoundError(f"No failures file found at {failures_path}")
-        failures_df = pd.read_parquet(failures_path)
+        failures_df = load_dataset(failures_path, file_format)
         required_cols = ["original_index", "column", "original_text"]
         if not all(col in failures_df.columns for col in required_cols):
             raise ValueError(f"Failures file missing required columns: {required_cols}")
@@ -364,9 +406,10 @@ async def translate_dataset(
         checkpoint_step=checkpoint_step,
         max_retries=max_retries,
         failure_retry_cycles=failure_retry_cycles,
+        file_format=file_format,
     )
 
-    merged = merge_checkpoints(save_dir / "checkpoints")
+    merged = merge_checkpoints(save_dir / "checkpoints", file_format)
     output_records = []
     for idx, row in df.iterrows():
         record = {"original_index": idx}
@@ -375,17 +418,16 @@ async def translate_dataset(
             record[f"translated_{col}"] = merged.get(idx, {}).get(col, "")
         output_records.append(record)
 
-    final_path = save_dir / "translated_dataset.parquet"
-    pd.DataFrame(output_records).to_parquet(final_path)
+    final_path = save_dir / f"translated_dataset.{file_format}"
+    save_dataset(pd.DataFrame(output_records), final_path, file_format)
     print(f"✅ Translation complete! Final dataset saved to {final_path}")
-
-
-app = typer.Typer()
 
 
 @app.command()
 def main(
-    input_path: Path = typer.Argument(..., help="Path to input Parquet dataset"),
+    input_path: Path = typer.Argument(
+        ..., help="Path to input dataset (CSV or Parquet)"
+    ),
     save_dir: Path = typer.Argument(..., help="Directory to save translated data"),
     source_lang: str = typer.Option(
         "en", "--source-lang", "-s", help="Source language code"
@@ -404,6 +446,12 @@ def main(
         "--protected-words",
         "-p",
         help="Comma-separated list or @file.txt of protected words",
+    ),
+    file_format: str = typer.Option(
+        "auto",
+        "--file-format",
+        "-f",
+        help="File format (csv, parquet, or auto for automatic detection)",
     ),
     batch_size: int = typer.Option(
         20, "--batch-size", "-b", help="Number of texts per translation request"
@@ -433,7 +481,7 @@ def main(
     ),
 ):
     """
-    Translate columns in a Parquet dataset with support for retrying failed items.
+    Translate columns in a dataset with support for retrying failed items.
     """
     if not only_failed and not columns:
         raise typer.BadParameter(
@@ -443,6 +491,9 @@ def main(
     protected = load_protected_words(protected_words)
     save_dir.mkdir(parents=True, exist_ok=True)
 
+    if file_format == "auto":
+        file_format = detect_file_format(input_path)
+
     asyncio.run(
         translate_dataset(
             input_path=input_path,
@@ -451,6 +502,7 @@ def main(
             target_lang=target_lang,
             columns=columns,
             protected_words=protected,
+            file_format=file_format,
             batch_size=batch_size,
             max_concurrency=max_concurrency,
             checkpoint_step=checkpoint_step,
