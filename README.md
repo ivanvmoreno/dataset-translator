@@ -23,17 +23,24 @@ A robust CLI tool for translating text columns in datasets using Google Translat
 - **🌐 Proxy Support**
   - Supports HTTP/HTTPS proxies for network requests.
 
+## ⚠ Important Notes and Limitations
+
+- This project is not affiliated with Google.
+- This project mainly relies on [py-googletrans](https://github.com/ssut/py-googletrans#how-does-this-library-work) work for reverse-engineering the Google Translate API. More info on this [here](https://github.com/ssut/py-googletrans#how-does-this-library-work).
+- Maximum length per text is `15,000` characters.
+- Your IP may be at risk of being blocked by Google if you abuse the service. Use responsibly (or consider using a proxy; see `--proxy` option).
+
 ## Installation
 
 ```bash
-pip install -U dataset-translator
-dataset-translator --help
+> pip install -U dataset-translator
+> dataset-translator --help
 ```
 
 ## Usage
 
 ```bash
-dataset-translator <path_to_dataset> ./output en eu \
+> dataset-translator <path_to_dataset> ./output en eu \
   -c instruction -c output
 ```
 
@@ -52,7 +59,7 @@ dataset-translator <path_to_dataset> ./output en eu \
 | `--only-failed` | Process only previously failed translations from the checkpoint directory (default: `False`). |
 | `--proxy` | HTTP/HTTPS proxy URL. Protocol must be specified. (e.g., `http://<proxy_host>:<proxy_port>`). |
 
-### Supported Languages
+## Supported Languages
 
 Here is the list of languages that are supported (free of restrictions, without subscription) by the service at `translate.googleapis.com`:
 
