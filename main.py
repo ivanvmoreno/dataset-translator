@@ -438,12 +438,8 @@ def main(
         ..., help="Path to input dataset (CSV or Parquet)"
     ),
     save_dir: Path = typer.Argument(..., help="Directory to save translated data"),
-    source_lang: str = typer.Option(
-        "en", "--source-lang", "-s", help="Source language code"
-    ),
-    target_lang: str = typer.Option(
-        "es", "--target-lang", "-t", help="Target language code"
-    ),
+    source_lang: str = typer.Argument(..., help="Source language code"),
+    target_lang: str = typer.Argument(..., help="Target language code"),
     columns: Optional[List[str]] = typer.Option(
         None,
         "--columns",
@@ -463,13 +459,13 @@ def main(
         help="File format (csv, parquet, or auto for automatic detection)",
     ),
     batch_size: int = typer.Option(
-        20, "--batch-size", "-b", help="Number of texts per translation request"
+        1, "--batch-size", "-b", help="Number of texts per translation request"
     ),
     max_concurrency: int = typer.Option(
-        20, "--max-concurrency", help="Maximum concurrent translation requests"
+        1, "--max-concurrency", help="Maximum concurrent translation requests"
     ),
     checkpoint_step: int = typer.Option(
-        500,
+        100,
         "--checkpoint-step",
         help="Number of successful translations between checkpoints",
     ),
