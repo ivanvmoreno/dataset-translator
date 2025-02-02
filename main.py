@@ -129,6 +129,7 @@ async def process_texts(
     target_lang: str,
     protected_words: List[str],
     save_dir: Path,
+    file_format: str,
     batch_size: int = 20,
     max_concurrency: int = 10,
     checkpoint_step: int = 100,
@@ -141,7 +142,7 @@ async def process_texts(
     checkpoint_dir = save_dir / "checkpoints"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-    existing = merge_checkpoints(checkpoint_dir)
+    existing = merge_checkpoints(checkpoint_dir, file_format)
     skip_set = {(idx, col) for idx, cols in existing.items() for col in cols}
     filtered_items = [(i, c, t) for i, c, t in items if (i, c) not in skip_set]
 
@@ -156,6 +157,7 @@ async def process_texts(
         max_concurrency,
         checkpoint_step,
         max_retries,
+        file_format=file_format,
     )
 
     for cycle_idx in range(1, failure_retry_cycles + 1):
@@ -185,10 +187,11 @@ async def process_texts(
             max_concurrency,
             checkpoint_step,
             max_retries,
+            file_format=file_format,
             is_retry_cycle=True,
         )
 
-        new_success_checkpoint = merge_checkpoints(checkpoint_dir)
+        new_success_checkpoint = merge_checkpoints(checkpoint_dir, file_format)
         newly_translated = {
             (idx, col) for idx, cols in new_success_checkpoint.items() for col in cols
         }
@@ -196,7 +199,7 @@ async def process_texts(
         all_failures = cycle_failures
 
     if all_failures:
-        final_failures_path = checkpoint_dir / "translation_failures.parquet"
+        final_failures_path = checkpoint_dir / f"translation_failures.{file_format}"
         pd.DataFrame(all_failures).to_parquet(final_failures_path)
         print(f"Some items still failed after {failure_retry_cycles} retry cycles.")
         print(f"Saved those failures to: {final_failures_path}")
@@ -213,6 +216,7 @@ async def _translate_in_batches(
     max_concurrency: int,
     checkpoint_step: int,
     max_retries: int,
+    file_format: str,
     is_retry_cycle: bool = False,
 ) -> List[Dict]:
     semaphore = asyncio.Semaphore(max_concurrency)
@@ -267,7 +271,8 @@ async def _translate_in_batches(
             checkpoint_counter += 1
             save_checkpoint(
                 results_buffer,
-                checkpoint_dir / f"checkpoint_{checkpoint_counter:04d}.parquet",
+                checkpoint_dir / f"checkpoint_{checkpoint_counter:04d}.{file_format}",
+                file_format,
             )
             results_buffer = []
 
@@ -275,7 +280,8 @@ async def _translate_in_batches(
         checkpoint_counter += 1
         save_checkpoint(
             results_buffer,
-            checkpoint_dir / f"checkpoint_{checkpoint_counter:04d}.parquet",
+            checkpoint_dir / f"checkpoint_{checkpoint_counter:04d}.{file_format}",
+            file_format,
         )
 
     progress.close()
@@ -421,6 +427,9 @@ async def translate_dataset(
     final_path = save_dir / f"translated_dataset.{file_format}"
     save_dataset(pd.DataFrame(output_records), final_path, file_format)
     print(f"✅ Translation complete! Final dataset saved to {final_path}")
+
+
+app = typer.Typer()
 
 
 @app.command()
