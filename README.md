@@ -26,7 +26,8 @@ A robust CLI tool for translating text columns in datasets using Google Translat
 ## Installation
 
 ```bash
-pip install dataset-translator
+pip install -U dataset-translator
+dataset-translator --help
 ```
 
 ## Usage
