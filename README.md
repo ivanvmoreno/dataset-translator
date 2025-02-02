@@ -24,7 +24,7 @@ A robust CLI tool for translating text columns in datasets using Google Translat
 - **🌐 Proxy Support**
   - Supports HTTP/HTTPS proxies for network requests.
 
-## ⚠ Important Notes and Limitations
+## ✋ Important Notes and Limitations
 
 - This project is not affiliated with Google.
 - This project mainly relies on [py-googletrans](https://github.com/ssut/py-googletrans#how-does-this-library-work) work for reverse-engineering the Google Translate API. More info on this [here](https://github.com/ssut/py-googletrans#how-does-this-library-work).
