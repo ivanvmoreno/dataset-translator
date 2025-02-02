@@ -49,6 +49,7 @@ dataset-translator <path_to_dataset> ./output en eu \
 | `--max-retries` | Maximum retry attempts per batch before marking as failed (default: `3`). |
 | `--max-failure-cycles` | Number of full retry cycles for previously failed translations (default: `3`). |
 | `--only-failed` | Process only previously failed translations from the checkpoint directory (default: `False`). |
+| `--proxy` | HTTP/HTTPS proxy URL. Protocol must be specified. (e.g., `http://<proxy_host>:<proxy_port>`). |
 
 ### Supported Languages
 
