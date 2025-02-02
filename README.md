@@ -4,17 +4,17 @@ A robust CLI tool for translating text columns in datasets using Google Translat
 
 ## Features
 
-- **Asynchronous:**
+- **⚡️ Asynchronous**
   - Leverages Python’s asyncio for concurrent translation of text batches.
-- **Batch Processing:**
+- **📦 Batch Processing**
   - Translates texts in batches to improve API efficiency.
-- **Checkpointing:**
+- **💾 Checkpointing**
   - Saves completed translations periodically to prevent data loss during long-running tasks. Supports resuming from the last checkpoint.
-- **Retry Mechanism:**
+- **🔄 Retry Mechanism**
   - Automatically retries failed translation batches with exponential backoff.
-- **Protected Words:**
+- **🛡️ Protected Words**
   - Preserves specific terms/phrases from being translated.
-- **Failure Handling:**
+- **🚑 Failure Handling**
   - Supports re-processing of previously failed translations using a dedicated "only-failed" mode.
 
 ## Installation
@@ -26,7 +26,7 @@ pip install dataset-translator
 ## Usage
 
 ```bash
-parquet-translator ./data.parquet ./output \
+dataset-translator ./data.parquet ./output \
   --columns review_text --source-lang en --target-lang es \
   --protected-words "<think>,</think>"
 ```
