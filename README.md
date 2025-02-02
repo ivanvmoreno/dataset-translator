@@ -35,7 +35,14 @@ parquet-translator ./data.parquet ./output \
 
 | Option | Description |
 |--------|-------------|
-| `--columns` | Columns to translate (multiple allowed) |
-| `--source-lang` | Source language code (default: en) |
-| `--target-lang` | Target language code (default: es) |
-| `--protected-words` | Protected terms (comma-separated or @file.txt) |
+| `--columns \| -c` | Columns to translate (multiple allowed). Required unless using `--only-failed`. You can pass this flag multiple times for several columns. |
+| `--source-lang \| -s` | Source language code (default: `en`). |
+| `--target-lang \| -t` | Target language code (default: `es`). |
+| `--protected-words \| -p` | Comma-separated list or `@file.txt` of protected words. |
+| `--file-format \| -f` | File format to use: `csv`, `parquet`, or `auto` (automatic detection; default: `auto`). |
+| `--batch-size \| -b` | Number of texts per translation request (default: `20`). |
+| `--max-concurrency` | Maximum concurrent translation requests (default: `20`). |
+| `--checkpoint-step` | Number of successful translations between checkpoints (default: `500`). |
+| `--max-retries` | Maximum retry attempts per batch before marking as failed (default: `3`). |
+| `--max-failure-cycles` | Number of full retry cycles for previously failed translations (default: `3`). |
+| `--only-failed` | Process only previously failed translations from the checkpoint directory (default: `False`). |
