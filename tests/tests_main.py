@@ -8,7 +8,7 @@ import pandas as pd
 import pytest
 from typer.testing import CliRunner
 
-from main import (
+from src.main import (
     load_protected_words,
     replace_protected_words,
     restore_protected_words,
@@ -225,7 +225,9 @@ async def test_translate_dataset_integration(tmp_path, monkeypatch):
     def dummy_translator_init(*args, **kwargs):
         return DummyTranslator()
 
-    monkeypatch.setattr("main.Translator", lambda **kwargs: DummyTranslator())
+    monkeypatch.setattr(
+        "src.main.Translator", lambda **kwargs: DummyTranslator()
+    )
 
     # Call the main translation workflow.
     await translate_dataset(
@@ -266,7 +268,9 @@ def test_main_cli(tmp_path, monkeypatch):
     save_dir.mkdir()
 
     # Monkeypatch the Translator so that it uses our DummyTranslator.
-    monkeypatch.setattr("main.Translator", lambda **kwargs: DummyTranslator())
+    monkeypatch.setattr(
+        "src.main.Translator", lambda **kwargs: DummyTranslator()
+    )
 
     # Run the CLI. Note: We need to supply --columns because --only-failed is False.
     result = runner.invoke(

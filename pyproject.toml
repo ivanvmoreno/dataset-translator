@@ -21,7 +21,7 @@ Repository = "https://github.com/ivanvmoreno/dataset-translator"
 Issues = "https://github.com/ivanvmoreno/dataset-translator/issues"
 
 [project.scripts]
-dataset-translator = "main:app"
+dataset-translator = "src.main:app"
 
 [dependency-groups]
 dev = ["black", "isort", "pytest", "pytest-asyncio"]
@@ -42,3 +42,6 @@ exclude = 'venv/'
 profile = 'black'
 src_paths = ['./']
 skip_glob = ["**/.env*", "**/.venv/*"]
+
+[tool.pytest.ini_options]
+asyncio_default_fixture_loop_scope = "session"
