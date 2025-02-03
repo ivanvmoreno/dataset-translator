@@ -4,14 +4,15 @@ authors = [{ name = "Iván Moreno", email = "ivan@ivan.build" }]
 version = "0.1.2"
 description = "⚡️ Efficient dataset translation using Google Translate's API"
 readme = "README.md"
-requires-python = ">=3.11"
-dependencies = [
-    "googletrans>=4.0.2",
-    "pandas>=2.2.3",
-    "pyarrow>=19.0.0",
-    "tqdm>=4.67.1",
-    "typer>=0.15.1",
+requires-python = ">=3.8"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
 ]
+dependencies = ["googletrans", "pandas", "pyarrow", "tqdm", "typer"]
 keywords = ["dataset", "translate", "hf", "google", "api"]
 license = { text = "MIT" }
 
@@ -23,10 +24,10 @@ Issues = "https://github.com/ivanvmoreno/dataset-translator/issues"
 dataset-translator = "main:app"
 
 [dependency-groups]
-dev = ["black>=25.1.0", "isort>=6.0.0"]
+dev = ["black", "isort"]
 
 [build-system]
-requires = ["setuptools>=68.0.0", "wheel"]
+requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
@@ -34,12 +35,10 @@ license-files = []
 
 [tool.black]
 line-length = 80
-target_version = ['py311']
 include = './.pyi?$'
 exclude = 'venv/'
 
 [tool.isort]
 profile = 'black'
-py_version = 311
 src_paths = ['./']
 skip_glob = ["**/.env*", "**/.venv/*"]
