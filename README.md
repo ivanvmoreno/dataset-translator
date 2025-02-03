@@ -1,6 +1,6 @@
 # `dataset-translator`
 
-![Python version](https://img.shields.io/badge/python-3.11-blue)
+![Python version](https://img.shields.io/badge/python-3.8%20%7C%203.9%20%7C%203.10%20%7C%203.11-blue)
 [![PyPI version](https://badge.fury.io/py/dataset-translator.svg?icon=si%3Apython)](https://pypi.org/project/dataset-translator/)
 [![GitHub issues](https://img.shields.io/github/issues/ivanvmoreno/dataset-translator)](https://github.com/ivanvmoreno/dataset-translator/issues)
 ![License](https://img.shields.io/badge/license-MIT-blue)
