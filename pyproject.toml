@@ -1,7 +1,7 @@
 [project]
 name = "dataset-translator"
 authors = [{ name = "Iván Moreno", email = "ivan@ivan.build" }]
-version = "0.1.4"
+version = "0.1.5"
 description = "⚡️ Efficient dataset translation using Google Translate's API"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -12,7 +12,14 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
 ]
-dependencies = ["googletrans", "pandas", "pyarrow", "tqdm", "typer"]
+dependencies = [
+    "googletrans",
+    "jsonlines>=4.0.0",
+    "pandas",
+    "pyarrow",
+    "tqdm",
+    "typer",
+]
 keywords = ["dataset", "translate", "hf", "google", "api"]
 license = { text = "MIT" }
 

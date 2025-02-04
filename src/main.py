@@ -7,10 +7,17 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Literal, Optional, Tuple
 
+import jsonlines
 import pandas as pd
 import typer
 from googletrans import Translator
 from tqdm import tqdm
+
+
+def is_file_path(path: str) -> bool:
+    """Returns True if the given path appears to be a file path (contains a filename)."""
+    p = Path(path)
+    return p.suffix != "" or (p.name != "" and "." in p.name)
 
 
 def load_protected_words(protected_words_arg: Optional[str]) -> List[str]:
@@ -313,12 +320,14 @@ async def _translate_in_batches(
     return all_failures
 
 
-def detect_file_format(file_path: Path) -> Literal["csv", "parquet"]:
+def detect_file_format(file_path: Path) -> Literal["csv", "parquet", "jsonl"]:
     """Detect the file format based on the file extension."""
     if file_path.suffix.lower() == ".csv":
         return "csv"
     elif file_path.suffix.lower() in (".parquet", ".pq"):
         return "parquet"
+    elif file_path.suffix.lower() == ".jsonl":
+        return "jsonl"
     elif file_path.is_dir():
         parquet_files = list(file_path.glob("*.parquet"))
         if parquet_files:
@@ -333,7 +342,9 @@ def load_dataset(
     """Load dataset from CSV or Parquet file."""
     if file_format is None or file_format == "auto":
         file_format = detect_file_format(file_path)
-
+    if file_format == "jsonl":
+        with jsonlines.open(file_path, "r") as reader:
+            return pd.DataFrame(reader)
     if file_format == "csv":
         return pd.read_csv(file_path)
     elif file_format == "parquet":
@@ -345,14 +356,17 @@ def load_dataset(
 def save_dataset(
     df: pd.DataFrame, file_path: Path, file_format: Optional[str] = None
 ):
-    """Save dataset to CSV or Parquet file."""
+    """Save dataset to CSV, Parquet or JSONL file."""
     if file_format is None or file_format == "auto":
         file_format = detect_file_format(file_path)
-
     if file_format == "csv":
         df.to_csv(file_path, index=False)
     elif file_format == "parquet":
         df.to_parquet(file_path, index=False)
+    elif file_format == "jsonl":
+        with jsonlines.open(file_path, "w") as writer:
+            for _, row in df.iterrows():
+                writer.write(row.to_dict())
     else:
         raise ValueError(f"Unsupported file format: {file_format}")
 
@@ -390,6 +404,7 @@ async def translate_dataset(
     columns: Optional[List[str]],
     protected_words: List[str],
     file_format: str,
+    output_file_format: str,
     batch_size: int = 20,
     max_concurrency: int = 10,
     checkpoint_step: int = 100,
@@ -470,8 +485,8 @@ async def translate_dataset(
             record[f"translated_{col}"] = merged.get(idx, {}).get(col, "")
         output_records.append(record)
 
-    final_path = save_dir / f"translated_dataset.{file_format}"
-    save_dataset(pd.DataFrame(output_records), final_path, file_format)
+    final_path = save_dir / f"translated_dataset.{output_file_format}"
+    save_dataset(pd.DataFrame(output_records), final_path, output_file_format)
     print(f"✅ Translation complete! Final dataset saved to {final_path}")
 
 
@@ -504,7 +519,12 @@ def main(
         "auto",
         "--file-format",
         "-f",
-        help="File format (csv, parquet, or auto for automatic detection)",
+        help="File format (csv, parquet, jsonl, auto). If not specified, file format will be inferred from the input file path.",
+    ),
+    output_file_format: Optional[str] = typer.Option(
+        "auto",
+        "--output-file-format",
+        help="Output file format (csv, parquet, jsonl, auto). If not specified, output format will be fallback to input file format.",
     ),
     batch_size: int = typer.Option(
         1, "--batch-size", "-b", help="Number of texts per translation request"
@@ -546,11 +566,16 @@ def main(
             "You must specify --columns unless using --only-failed"
         )
 
+    if is_file_path(str(save_dir)):
+        raise ValueError("save_dir must be a directory, not a file path.")
+
     protected = load_protected_words(protected_words)
     save_dir.mkdir(parents=True, exist_ok=True)
 
     if file_format == "auto":
         file_format = detect_file_format(input_path)
+    if output_file_format == "auto":
+        output_file_format = file_format
 
     asyncio.run(
         translate_dataset(
@@ -561,6 +586,7 @@ def main(
             columns=columns,
             protected_words=protected,
             file_format=file_format,
+            output_file_format=output_file_format,
             batch_size=batch_size,
             max_concurrency=max_concurrency,
             checkpoint_step=checkpoint_step,

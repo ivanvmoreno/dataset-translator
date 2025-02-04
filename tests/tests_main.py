@@ -7,6 +7,7 @@ import shutil
 import pandas as pd
 import pytest
 from typer.testing import CliRunner
+import jsonlines
 
 from src.main import (
     load_protected_words,
@@ -206,6 +207,65 @@ async def test_process_texts_checkpointing(tmp_path):
     assert len(ckpts) >= 2
 
 
+# --- Additional integration tests ---
+
+
+# --- Test handling of JSONL input format ---
+def test_detect_file_format_jsonl(tmp_path):
+    jsonl_file = tmp_path / "data.jsonl"
+    with jsonlines.open(jsonl_file, mode="w") as writer:
+        writer.write({"col1": "value1", "col2": "value2"})
+
+    assert detect_file_format(jsonl_file) == "jsonl"
+
+    df = load_dataset(jsonl_file, "jsonl")
+    assert not df.empty
+    assert list(df.columns) == ["col1", "col2"]
+
+
+# --- Test saving and loading JSONL output format ---
+def test_save_and_load_jsonl(tmp_path):
+    df = pd.DataFrame({"col": ["data1", "data2"]})
+    jsonl_path = tmp_path / "test.jsonl"
+    save_dataset(df, jsonl_path, "jsonl")
+
+    loaded_df = load_dataset(jsonl_path, "jsonl")
+    pd.testing.assert_frame_equal(df, loaded_df)
+
+
+# --- Test auto output format inferred from input format ---
+def test_main_auto_output_format(tmp_path, monkeypatch):
+    runner = CliRunner()
+    df = pd.DataFrame({"text": ["Auto-detect"]})
+    input_parquet = tmp_path / "input.parquet"
+    df.to_parquet(input_parquet)
+    save_dir = tmp_path / "output"
+    save_dir.mkdir()
+
+    monkeypatch.setattr(
+        "src.main.Translator", lambda **kwargs: DummyTranslator()
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            str(input_parquet),
+            str(save_dir),
+            "en",
+            "es",
+            "--columns",
+            "text",
+            "--output-file-format",
+            "auto",
+        ],
+    )
+
+    assert result.exit_code == 0
+    final_path = save_dir / "translated_dataset.parquet"
+    assert final_path.exists()
+    assert detect_file_format(final_path) == "parquet"
+
+
 # --- Integration tests for the full workflow ---
 
 
@@ -238,6 +298,7 @@ async def test_translate_dataset_integration(tmp_path, monkeypatch):
         columns=["text"],
         protected_words=[],
         file_format="csv",
+        output_file_format="csv",
         batch_size=1,
         max_concurrency=1,
         checkpoint_step=1,
@@ -326,3 +387,27 @@ def test_main_no_columns(tmp_path):
     # Expect a nonzero exit code and error message about missing columns.
     assert result.exit_code != 0
     assert "must specify --columns" in result.output
+
+
+# --- Test failing when output path is a directory ---
+def test_main_output_path_is_directory(tmp_path):
+    runner = CliRunner()
+    df = pd.DataFrame({"text": ["Hello"]})
+    input_csv = tmp_path / "input.csv"
+    df.to_csv(input_csv, index=False)
+    save_dir = (
+        tmp_path / "translated.csv"
+    )  # This should be a directory, not a file.
+
+    result = runner.invoke(
+        app,
+        [
+            str(input_csv),
+            str(save_dir),
+            "en",
+            "es",
+            "--columns",
+            "text",
+        ],
+    )
+    assert result.exit_code != 0
