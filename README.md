@@ -12,7 +12,7 @@ A robust CLI tool for translating text columns in datasets using Google Translat
 - **📄 Supports multiple input and output formats**
   - Supports `CSV`, `Parquet`, `JSONL` inputs and outputs, with automatic format detection.
 - **⚡️ Asynchronous**
-  - Leverages Python’s asyncio for concurrent translation of text batches.
+  - Leverages Python’s `asyncio` for concurrent translation of text batches.
 - **📦 Batch Processing**
   - Translates texts in batches to improve API efficiency.
 - **💾 Checkpointing**
@@ -53,7 +53,8 @@ A robust CLI tool for translating text columns in datasets using Google Translat
 |--------|-------------|
 | `--columns \| -c` | Columns to translate (multiple allowed). Required unless using `--only-failed`. You can pass this flag multiple times for several columns. |
 | `--protected-words \| -p` | Comma-separated list or `@file.txt` of protected words. |
-| `--file-format \| -f` | File format to use: `csv`, `parquet`, or `auto` (automatic detection; default: `auto`). |
+| `--file-format \| -f` | File format (`csv`, `parquet`, `jsonl`, `auto`). If not specified, file format will be inferred from the input file path. (default: `auto`). |
+| `--output-file-format` | Output file format (`csv`, `parquet`, `jsonl`, `auto`). If not specified, output format will be fallback to input file format. (default: `auto`). |
 | `--batch-size \| -b` | Number of texts per translation request (default: `1`). |
 | `--max-concurrency` | Maximum concurrent translation requests (default: `1`). |
 | `--checkpoint-step` | Number of successful translations between checkpoints (default: `500`). |
@@ -61,6 +62,7 @@ A robust CLI tool for translating text columns in datasets using Google Translat
 | `--max-failure-cycles` | Number of full retry cycles for previously failed translations (default: `3`). |
 | `--only-failed` | Process only previously failed translations from the checkpoint directory (default: `False`). |
 | `--proxy` | HTTP/HTTPS proxy URL. Protocol must be specified. (e.g., `http://<proxy_host>:<proxy_port>`). |
+| `--help` | Show help message and exit. |
 
 ## Supported Languages
 
