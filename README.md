@@ -7,6 +7,9 @@
 
 A robust CLI tool for translating text columns in datasets using Google Translate, with support for protected words, retries, and checkpoint recovery.
 
+> [!TIP]
+> Check the [prioritized backlog](https://github.com/users/ivanvmoreno/projects/1/views/3?system_template=iterative_development) for ideas to contribute, or to get an idea of what's coming next!
+
 ## Features
 
 - **📄 Supports multiple input and output formats**
