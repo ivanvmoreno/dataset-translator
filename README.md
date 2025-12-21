@@ -33,6 +33,7 @@ A robust CLI tool for translating text columns in datasets using Google Translat
 
 - This project is not affiliated with Google.
 - This project mainly relies on [py-googletrans](https://github.com/ssut/py-googletrans#how-does-this-library-work) work for reverse-engineering the Google Translate API. More info on this [here](https://github.com/ssut/py-googletrans#how-does-this-library-work).
+- To use Google Cloud Translation API, pass `--google-api-key` and ensure the Cloud Translation API is enabled for that key.
 - Maximum length per text is `15,000` characters.
 - Your IP may be at risk of being blocked by Google if you abuse the service. Use responsibly (or consider using a proxy; see `--proxy` option).
 
@@ -65,6 +66,7 @@ A robust CLI tool for translating text columns in datasets using Google Translat
 | `--max-failure-cycles` | Number of full retry cycles for previously failed translations (default: `3`). |
 | `--only-failed` | Process only previously failed translations from the checkpoint directory (default: `False`). |
 | `--proxy` | HTTP/HTTPS proxy URL. Protocol must be specified. (e.g., `http://<proxy_host>:<proxy_port>`). |
+| `--google-api-key` | Google Cloud Translation API key. When provided, the Cloud Translation API is used instead of the free Google Translate endpoint. |
 | `--help` | Show help message and exit. |
 
 ## Supported Languages

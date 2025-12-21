@@ -13,6 +13,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
 ]
 dependencies = [
+    "google-cloud-translate>=3.23.0",
     "googletrans",
     "jsonlines>=4.0.0",
     "pandas",
@@ -31,7 +32,13 @@ Issues = "https://github.com/ivanvmoreno/dataset-translator/issues"
 dataset-translator = "src.main:app"
 
 [dependency-groups]
-dev = ["black", "isort", "pytest", "pytest-asyncio"]
+dev = [
+    "black",
+ "isort",
+ "pytest",
+ "pytest-asyncio",
+ "ty>=0.0.5",
+]
 
 [build-system]
 requires = ["setuptools", "wheel"]

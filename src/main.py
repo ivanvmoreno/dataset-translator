@@ -5,13 +5,67 @@ import re
 import uuid
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, List, Literal, Optional, Tuple
+from dataclasses import dataclass
+from typing import Dict, List, Literal, Optional, Protocol, Tuple
 
 import jsonlines
 import pandas as pd
+from pandas import DataFrame
 import typer
+from google.cloud import translate_v2 as translate_v2
 from googletrans import Translator
 from tqdm import tqdm
+
+
+class AsyncTranslator(Protocol):
+    async def translate(
+        self, texts: List[str], src: str, dest: str
+    ) -> List["TranslationResult"]: ...
+
+
+@dataclass
+class TranslationResult:
+    text: str
+
+
+class CloudTranslator:
+    def __init__(self, api_key: str):
+        if not api_key.strip():
+            raise ValueError("Google API key must be provided.")
+        self.client = translate_v2.Client(api_key=api_key)
+
+    async def translate(
+        self, texts: List[str], src: str, dest: str
+    ) -> List[TranslationResult]:
+        return await asyncio.to_thread(self._translate_sync, texts, src, dest)
+
+    def _translate_sync(
+        self, texts: List[str], src: str, dest: str
+    ) -> List[TranslationResult]:
+        results = self.client.translate(
+            texts,
+            source_language=src,
+            target_language=dest,
+            format_="text",
+        )
+        if isinstance(texts, str):
+            results = [results]
+        return [
+            TranslationResult(item.get("translatedText", ""))
+            for item in results
+        ]
+
+
+def create_translator(
+    google_api_key: Optional[str], proxy: Optional[str]
+) -> AsyncTranslator:
+    if google_api_key:
+        return CloudTranslator(google_api_key)
+
+    translator_args = {}
+    if proxy:
+        translator_args["proxy"] = proxy
+    return Translator(**translator_args)
 
 
 def is_file_path(path: str) -> bool:
@@ -73,7 +127,7 @@ def restore_protected_words(
 
 async def process_batch(
     batch: List[Tuple[int, str, str]],
-    translator: Translator,
+    translator: AsyncTranslator,
     source_lang: str,
     target_lang: str,
     protected_words: List[str],
@@ -146,7 +200,7 @@ async def process_batch(
 
 async def process_texts(
     items: List[Tuple[int, str, str]],
-    translator: Translator,
+    translator: AsyncTranslator,
     source_lang: str,
     target_lang: str,
     protected_words: List[str],
@@ -235,7 +289,7 @@ async def process_texts(
 
 async def _translate_in_batches(
     items: List[Tuple[int, str, str]],
-    translator: Translator,
+    translator: AsyncTranslator,
     source_lang: str,
     target_lang: str,
     protected_words: List[str],
@@ -412,6 +466,7 @@ async def translate_dataset(
     failure_retry_cycles: int = 1,
     only_failed: bool = False,
     proxy: Optional[str] = None,
+    google_api_key: Optional[str] = None,
 ):
     """Main translation workflow with --only-failed support."""
     df = load_dataset(input_path, file_format)
@@ -424,8 +479,12 @@ async def translate_dataset(
             raise FileNotFoundError(
                 f"No failures file found at {failures_path}"
             )
-        failures_df = load_dataset(failures_path, file_format)
-        required_cols = ["original_index", "column", "original_text"]
+        failures_df: DataFrame = load_dataset(failures_path, file_format)
+        required_cols: list = [
+            "original_index",
+            "column",
+            "original_text",
+        ]
         if not all(col in failures_df.columns for col in required_cols):
             raise ValueError(
                 f"Failures file missing required columns: {required_cols}"
@@ -455,11 +514,10 @@ async def translate_dataset(
         print("No items to translate.")
         return
 
-    translator_args = {}
-    if proxy:
-        translator_args["proxy"] = proxy
-
-    translator = Translator(**translator_args)
+    translator: AsyncTranslator = create_translator(
+        google_api_key=google_api_key,
+        proxy=proxy,
+    )
 
     await process_texts(
         items=items,
@@ -557,6 +615,11 @@ def main(
         "--proxy",
         help="Proxy URL to use for translation requests. Protocol must be specified. Example: http://<ip>:<port>",
     ),
+    google_api_key: Optional[str] = typer.Option(
+        None,
+        "--google-api-key",
+        help="Google Cloud Translation API key. When provided, the Cloud Translation API is used instead of the free endpoint.",
+    ),
 ):
     """
     Translate columns in a dataset with support for retrying failed items.
@@ -594,6 +657,7 @@ def main(
             failure_retry_cycles=failure_retry_cycles,
             only_failed=only_failed,
             proxy=proxy,
+            google_api_key=google_api_key,
         )
     )
 

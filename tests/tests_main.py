@@ -1,5 +1,3 @@
-# tests/test_translation.py
-
 import asyncio
 import re
 import shutil
@@ -306,6 +304,7 @@ async def test_translate_dataset_integration(tmp_path, monkeypatch):
         failure_retry_cycles=0,
         only_failed=False,
         proxy=None,
+        google_api_key=None,
     )
 
     # Check that the final translated dataset exists.
