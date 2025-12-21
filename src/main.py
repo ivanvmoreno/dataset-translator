@@ -28,6 +28,38 @@ class TranslationResult:
     text: str
 
 
+class TokenBucket:
+    def __init__(self, rate: float) -> None:
+        if rate <= 0:
+            raise ValueError("rate must be > 0")
+        self._rate = rate
+        self._capacity = 1
+        self._tokens = 1.0
+        self._lock = asyncio.Lock()
+        self._last_ts: Optional[float] = None
+
+    async def acquire(self, tokens: int = 1) -> None:
+        if tokens <= 0:
+            raise ValueError("tokens must be > 0")
+        while True:
+            async with self._lock:
+                now = asyncio.get_running_loop().time()
+                if self._last_ts is None:
+                    self._last_ts = now
+                elapsed = now - self._last_ts
+                if elapsed > 0:
+                    self._tokens = min(
+                        self._capacity,
+                        self._tokens + (elapsed * self._rate),
+                    )
+                    self._last_ts = now
+                if self._tokens >= tokens:
+                    self._tokens -= tokens
+                    return
+                wait_for = (tokens - self._tokens) / self._rate
+            await asyncio.sleep(wait_for)
+
+
 class CloudTranslator:
     def __init__(self, api_key: str):
         if not api_key.strip():
@@ -132,6 +164,7 @@ async def process_batch(
     target_lang: str,
     protected_words: List[str],
     max_retries: int = 3,
+    rate_limiter: Optional[TokenBucket] = None,
 ) -> Tuple[List[Dict], List[Dict]]:
     """Process a batch of translations."""
     processed_texts = []
@@ -144,6 +177,8 @@ async def process_batch(
     translations = []
     for attempt in range(max_retries):
         try:
+            if rate_limiter:
+                await rate_limiter.acquire()
             translations = await translator.translate(
                 processed_texts, src=source_lang, dest=target_lang
             )
@@ -211,6 +246,7 @@ async def process_texts(
     checkpoint_step: int = 100,
     max_retries: int = 3,
     failure_retry_cycles: int = 1,
+    rate_limiter: Optional[TokenBucket] = None,
 ) -> None:
     """
     Orchestrate concurrent processing with checkpointing and failure cycles.
@@ -233,6 +269,7 @@ async def process_texts(
         max_concurrency,
         checkpoint_step,
         max_retries,
+        rate_limiter,
         file_format=file_format,
     )
 
@@ -263,6 +300,7 @@ async def process_texts(
             max_concurrency,
             checkpoint_step,
             max_retries,
+            rate_limiter,
             file_format=file_format,
             is_retry_cycle=True,
         )
@@ -298,6 +336,7 @@ async def _translate_in_batches(
     max_concurrency: int,
     checkpoint_step: int,
     max_retries: int,
+    rate_limiter: Optional[TokenBucket],
     file_format: str,
     is_retry_cycle: bool = False,
 ) -> List[Dict]:
@@ -322,6 +361,7 @@ async def _translate_in_batches(
                     target_lang,
                     protected_words,
                     max_retries,
+                    rate_limiter,
                 )
                 return successes, failures, batch_size_items
             except Exception as e:
@@ -467,6 +507,7 @@ async def translate_dataset(
     only_failed: bool = False,
     proxy: Optional[str] = None,
     google_api_key: Optional[str] = None,
+    rate_limit_per_sec: Optional[float] = None,
 ):
     """Main translation workflow with --only-failed support."""
     df = load_dataset(input_path, file_format)
@@ -518,6 +559,11 @@ async def translate_dataset(
         google_api_key=google_api_key,
         proxy=proxy,
     )
+    rate_limiter = None
+    if rate_limit_per_sec is not None:
+        if rate_limit_per_sec <= 0:
+            raise ValueError("rate_limit_per_sec must be > 0")
+        rate_limiter = TokenBucket(rate_limit_per_sec)
 
     await process_texts(
         items=items,
@@ -531,6 +577,7 @@ async def translate_dataset(
         checkpoint_step=checkpoint_step,
         max_retries=max_retries,
         failure_retry_cycles=failure_retry_cycles,
+        rate_limiter=rate_limiter,
         file_format=file_format,
     )
 
@@ -620,6 +667,11 @@ def main(
         "--google-api-key",
         help="Google Cloud Translation API key. When provided, the Cloud Translation API is used instead of the free endpoint.",
     ),
+    rate_limit_per_sec: Optional[float] = typer.Option(
+        None,
+        "--rate-limit",
+        help="Max translation requests per second. Token bucket is applied per batch.",
+    ),
 ):
     """
     Translate columns in a dataset with support for retrying failed items.
@@ -658,6 +710,7 @@ def main(
             only_failed=only_failed,
             proxy=proxy,
             google_api_key=google_api_key,
+            rate_limit_per_sec=rate_limit_per_sec,
         )
     )
 
