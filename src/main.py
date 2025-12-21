@@ -14,7 +14,7 @@ from pandas import DataFrame
 import typer
 from google.cloud import translate_v2 as translate_v2
 from googletrans import Translator
-from datasets import Dataset, DatasetDict, Sequence, Value
+from datasets import Dataset, DatasetDict, DownloadMode, Sequence, Value
 from datasets import load_dataset as hf_load_dataset
 from tqdm import tqdm
 
@@ -608,14 +608,21 @@ def load_hf_splits(
     dataset_name: str,
     subset: Optional[str],
     splits: Optional[List[str]],
+    cache_dir: Path,
 ):
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    load_kwargs = {
+        "name": subset,
+        "cache_dir": str(cache_dir),
+        "download_mode": DownloadMode.REUSE_CACHE_IF_EXISTS,
+    }
     if splits:
         return {
-            split: hf_load_dataset(dataset_name, name=subset, split=split)
+            split: hf_load_dataset(dataset_name, split=split, **load_kwargs)
             for split in splits
         }
 
-    loaded = hf_load_dataset(dataset_name, name=subset)
+    loaded = hf_load_dataset(dataset_name, **load_kwargs)
     if isinstance(loaded, DatasetDict):
         return dict(loaded)
     if isinstance(loaded, Dataset):
@@ -799,7 +806,8 @@ async def translate_hf_dataset(
     subset: Optional[str] = None,
     splits: Optional[List[str]] = None,
 ) -> None:
-    datasets = load_hf_splits(dataset_name, subset, splits)
+    hf_cache_dir = save_dir / "hf_cache"
+    datasets = load_hf_splits(dataset_name, subset, splits, hf_cache_dir)
     if columns is None and not column_type_filters:
         column_type_filters = ["string"]
     translator: AsyncTranslator = create_translator(

@@ -76,6 +76,7 @@ A robust CLI tool for translating text columns in datasets using Google Translat
 ### Hugging Face Datasets 🤗
 
 Translate datasets from the Hub by passing `--hf` and using the dataset name in place of the input path. Each split is translated into its own subdirectory under `save_dir`.
+Downloads are cached locally under `save_dir/hf_cache` and reused on resume.
 
 ```bash
 > dataset-translator imdb ./output en es \
