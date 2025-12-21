@@ -1,6 +1,7 @@
 # Project-specific
 reports/
 output/
+hf_cache/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

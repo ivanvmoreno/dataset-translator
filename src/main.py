@@ -75,6 +75,108 @@ class TokenBucket:
 
 
 VALID_COLUMN_TYPES = {"string", "list[string]"}
+OUTPUT_FILE_EXTENSIONS = {".csv", ".parquet", ".jsonl"}
+
+
+def ensure_output_root(save_dir: Path) -> None:
+    if save_dir.exists() and not save_dir.is_dir():
+        raise ValueError(f"Output path must be a directory: {save_dir}")
+    if save_dir.suffix in OUTPUT_FILE_EXTENSIONS and not save_dir.exists():
+        raise ValueError(
+            f"Output path must be a directory, not a file: {save_dir}"
+        )
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+
+def sanitize_run_label(label: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", label).strip("._-")
+    return cleaned or "dataset"
+
+
+def build_run_dir(
+    save_dir: Path, label: str, source_lang: str, target_lang: str
+) -> Path:
+    run_name = f"{sanitize_run_label(label)}__{source_lang}_to_{target_lang}"
+    run_dir = save_dir / run_name
+    run_dir.mkdir(parents=True, exist_ok=True)
+    return run_dir
+
+
+def list_checkpoint_files(
+    checkpoint_root: Path, file_format: str
+) -> List[Path]:
+    batches_dir = checkpoint_root / "batches"
+    batches = list(batches_dir.glob(f"checkpoint_*.{file_format}"))
+    files = {path.resolve() for path in batches}
+    return sorted(files, key=lambda p: str(p))
+
+
+def next_checkpoint_index(checkpoint_dir: Path, file_format: str) -> int:
+    max_index = 0
+    for path in checkpoint_dir.glob(f"checkpoint_*.{file_format}"):
+        match = re.search(r"checkpoint_(\d+)", path.stem)
+        if match:
+            max_index = max(max_index, int(match.group(1)))
+    return max_index
+
+
+def prepare_checkpoint_dirs(save_dir: Path) -> Tuple[Path, Path, Path]:
+    checkpoint_root = save_dir / "checkpoints"
+    batches_dir = checkpoint_root / "batches"
+    failures_dir = checkpoint_root / "failures"
+    checkpoint_root.mkdir(parents=True, exist_ok=True)
+    batches_dir.mkdir(parents=True, exist_ok=True)
+    failures_dir.mkdir(parents=True, exist_ok=True)
+    return checkpoint_root, batches_dir, failures_dir
+
+
+def resolve_hf_cache_dir(save_dir: Path) -> Path:
+    return save_dir.parent / "hf_cache"
+
+
+def detect_file_format(path: Path) -> str:
+    if path.is_dir():
+        for ext, fmt in (
+            (".parquet", "parquet"),
+            (".pq", "parquet"),
+            (".jsonl", "jsonl"),
+            (".csv", "csv"),
+        ):
+            if list(path.glob(f"*{ext}")):
+                return fmt
+        raise ValueError(f"Could not detect file format in directory: {path}")
+    if path.suffix == ".csv":
+        return "csv"
+    if path.suffix in (".parquet", ".pq"):
+        return "parquet"
+    if path.suffix == ".jsonl":
+        return "jsonl"
+    raise ValueError(f"Could not detect file format: {path}")
+
+
+def load_dataset(path: Path, file_format: str) -> pd.DataFrame:
+    if file_format == "csv":
+        return pd.read_csv(path)
+    if file_format == "parquet":
+        return pd.read_parquet(path)
+    if file_format == "jsonl":
+        with jsonlines.open(path, "r") as reader:
+            return pd.DataFrame(list(reader))
+    raise ValueError(f"Unknown format {file_format}")
+
+
+def save_dataset(df: pd.DataFrame, path: Path, file_format: str) -> None:
+    if file_format == "csv":
+        df.to_csv(path, index=False)
+        return
+    if file_format == "parquet":
+        df.to_parquet(path, index=False)
+        return
+    if file_format == "jsonl":
+        with jsonlines.open(path, "w") as writer:
+            writer.write_all(df.to_dict("records"))
+        return
+    raise ValueError(f"Unknown format {file_format}")
 
 
 class CloudTranslator:
@@ -108,24 +210,30 @@ class CloudTranslator:
 
 
 class FallbackAsyncTranslator:
-    """Async wrapper for googletrans library."""
+    """Async wrapper for the synchronous googletrans library."""
 
     def __init__(self, proxy: Optional[str] = None):
-        proxies = {"http": proxy, "https": proxy} if proxy else None
-        self.translator = Translator(proxies=proxies)
+        # FIX 1: Remove 'proxies' arg from init (fixes the previous TypeError)
+        self.translator = Translator()
+        self.proxy = proxy  # Store if needed for custom implementations, mostly unused in auto-mode
 
     async def translate(
         self, texts: List[str], src: str, dest: str
     ) -> List[TranslationResult]:
-        return await asyncio.to_thread(self._translate_sync, texts, src, dest)
+        if asyncio.iscoroutinefunction(self.translator.translate):
+            results = await self.translator.translate(texts, src=src, dest=dest)
+        else:
+            results = await asyncio.to_thread(
+                self._translate_sync, texts, src, dest
+            )
 
-    def _translate_sync(
-        self, texts: List[str], src: str, dest: str
-    ) -> List[TranslationResult]:
-        results = self.translator.translate(texts, src=src, dest=dest)
         if not isinstance(results, list):
             results = [results]
+
         return [TranslationResult(r.text) for r in results]
+
+    def _translate_sync(self, texts: List[str], src: str, dest: str) -> Any:
+        return self.translator.translate(texts, src=src, dest=dest)
 
 
 def create_translator(
@@ -219,7 +327,7 @@ async def process_batch(
     target_lang: str,
     protected_words: List[str],
     max_retries: int,
-    rate_limiter: Optional[TokenBucket],
+    rate_limiter: Optional[TokenBucket] = None,
 ) -> Tuple[List[Dict], List[Dict]]:
     """Process a single batch of text."""
     processed_texts = []
@@ -358,7 +466,7 @@ async def process_stream(
     pending_tasks: Set[asyncio.Task] = set()
     results_buffer = []
     all_failures = []
-    checkpoint_counter = 0
+    checkpoint_counter = next_checkpoint_index(checkpoint_dir, file_format)
 
     batch_iterator = batched(items_generator, batch_size)
 
@@ -406,6 +514,53 @@ async def process_stream(
 
     progress.close()
     return all_failures
+
+
+async def process_texts(
+    items: Iterable[Tuple[int, str, str]],
+    translator: AsyncTranslator,
+    source_lang: str,
+    target_lang: str,
+    protected_words: List[str],
+    save_dir: Path,
+    file_format: str,
+    batch_size: int,
+    max_concurrency: int,
+    checkpoint_step: int,
+    max_retries: int,
+    failure_retry_cycles: int = 0,
+    rate_limiter: Optional[TokenBucket] = None,
+) -> List[Dict]:
+    ensure_output_root(save_dir)
+    checkpoint_root, checkpoint_batches_dir, checkpoint_failures_dir = (
+        prepare_checkpoint_dirs(save_dir)
+    )
+    failures = await process_stream(
+        items_generator=items,
+        total_items=len(items),
+        translator=translator,
+        source_lang=source_lang,
+        target_lang=target_lang,
+        protected_words=protected_words,
+        checkpoint_dir=checkpoint_batches_dir,
+        batch_size=batch_size,
+        max_concurrency=max_concurrency,
+        checkpoint_step=checkpoint_step,
+        max_retries=max_retries,
+        rate_limiter=rate_limiter,
+        file_format=file_format,
+    )
+    if failures:
+        final_fail_path = (
+            checkpoint_failures_dir / f"translation_failures.{file_format}"
+        )
+        if file_format == "parquet":
+            pd.DataFrame(failures).to_parquet(final_fail_path)
+        else:
+            pd.DataFrame(failures).to_csv(
+                final_fail_path.with_suffix(".csv"), index=False
+            )
+    return failures
 
 
 def generate_translation_tasks(
@@ -459,7 +614,13 @@ def select_columns_from_df(
             is_str = pd.api.types.is_string_dtype(series) or all(
                 isinstance(x, str) for x in series.head(100)
             )
+            is_list_str = all(
+                isinstance(x, list) and all(isinstance(item, str) for item in x)
+                for x in series.head(100)
+            )
             if "string" in type_set and is_str:
+                filtered.append(col)
+            elif "list[string]" in type_set and is_list_str:
                 filtered.append(col)
         selected = filtered
     return selected
@@ -487,7 +648,14 @@ def select_columns_from_hf(
     for col in selected:
         feature = dataset.features.get(col)
         is_string = isinstance(feature, Value) and feature.dtype == "string"
+        is_list_string = (
+            isinstance(feature, Sequence)
+            and isinstance(feature.feature, Value)
+            and feature.feature.dtype == "string"
+        )
         if "string" in type_set and is_string:
+            filtered.append(col)
+        elif "list[string]" in type_set and is_list_string:
             filtered.append(col)
     return filtered
 
@@ -519,11 +687,11 @@ def load_hf_splits(
 
 
 def merge_checkpoints(
-    checkpoint_dir: Path, file_format: str
+    checkpoint_root: Path, file_format: str
 ) -> Dict[int, Dict[str, str]]:
     """Loads all checkpoints into a dictionary for fast lookup during reconstruction."""
     merged = defaultdict(dict)
-    files = list(checkpoint_dir.glob(f"checkpoint_*.{file_format}"))
+    files = list_checkpoint_files(checkpoint_root, file_format)
     if not files:
         return merged
 
@@ -534,6 +702,12 @@ def merge_checkpoints(
                     merged[row["original_index"]][row["column"]] = row.get(
                         "translated_text", ""
                     )
+        elif file_format == "csv":
+            df = pd.read_csv(ckpt)
+            for _, row in df.iterrows():
+                merged[row["original_index"]][row["column"]] = row[
+                    "translated_text"
+                ]
         elif file_format == "parquet":
             df = pd.read_parquet(ckpt)
             for _, row in df.iterrows():
@@ -562,10 +736,11 @@ async def orchestrate_translation(
     failure_retry_cycles: int,
     only_failed: bool,
 ):
-    checkpoint_dir = save_dir / "checkpoints"
-    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint_root, checkpoint_batches_dir, checkpoint_failures_dir = (
+        prepare_checkpoint_dirs(save_dir)
+    )
 
-    existing = merge_checkpoints(checkpoint_dir, file_format)
+    existing = merge_checkpoints(checkpoint_root, file_format)
     skip_set = {(idx, col) for idx, cols in existing.items() for col in cols}
 
     if not only_failed:
@@ -580,7 +755,7 @@ async def orchestrate_translation(
             source_lang=source_lang,
             target_lang=target_lang,
             protected_words=protected_words,
-            checkpoint_dir=checkpoint_dir,
+            checkpoint_dir=checkpoint_batches_dir,
             batch_size=batch_size,
             max_concurrency=max_concurrency,
             checkpoint_step=checkpoint_step,
@@ -589,7 +764,9 @@ async def orchestrate_translation(
             file_format=file_format,
         )
     else:
-        fail_path = checkpoint_dir / f"translation_failures.{file_format}"
+        fail_path = (
+            checkpoint_failures_dir / f"translation_failures.{file_format}"
+        )
         if not fail_path.exists():
             print("No failures file found.")
             failures = []
@@ -625,7 +802,7 @@ async def orchestrate_translation(
             source_lang=source_lang,
             target_lang=target_lang,
             protected_words=protected_words,
-            checkpoint_dir=checkpoint_dir,
+            checkpoint_dir=checkpoint_batches_dir,
             batch_size=batch_size,
             max_concurrency=max_concurrency,
             checkpoint_step=checkpoint_step,
@@ -635,14 +812,16 @@ async def orchestrate_translation(
             is_retry_cycle=True,
         )
 
-        new_merged = merge_checkpoints(checkpoint_dir, file_format)
+        new_merged = merge_checkpoints(checkpoint_root, file_format)
         skip_set = {
             (idx, col) for idx, cols in new_merged.items() for col in cols
         }
         failures = cycle_failures
 
     if failures:
-        final_fail_path = checkpoint_dir / f"translation_failures.{file_format}"
+        final_fail_path = (
+            checkpoint_failures_dir / f"translation_failures.{file_format}"
+        )
         (
             pd.DataFrame(failures).to_parquet(final_fail_path)
             if file_format == "parquet"
@@ -652,7 +831,7 @@ async def orchestrate_translation(
         )
 
     print("Merging translations into final dataset...")
-    final_merged = merge_checkpoints(checkpoint_dir, file_format)
+    final_merged = merge_checkpoints(checkpoint_root, file_format)
     output_path = save_dir / f"translated_dataset.{output_file_format}"
 
     if output_file_format == "jsonl":
@@ -730,6 +909,7 @@ async def translate_dataset_file(
     output_file_format: str,
     **kwargs,
 ):
+    ensure_output_root(save_dir)
     if file_format == "jsonl":
         with jsonlines.open(input_path, "r") as r:
             df = pd.DataFrame(list(r))
@@ -745,16 +925,58 @@ async def translate_dataset_file(
         print("No columns to translate.")
         return
 
+    run_dir = build_run_dir(save_dir, input_path.stem, source_lang, target_lang)
     await orchestrate_translation(
         dataset=df,
         dataset_length=len(df),
-        save_dir=save_dir,
+        save_dir=run_dir,
         source_lang=source_lang,
         target_lang=target_lang,
         columns=selected_cols,
         protected_words=protected_words,
         file_format=file_format,
         output_file_format=output_file_format,
+        **kwargs,
+    )
+
+
+async def translate_dataset(
+    input_path: Path,
+    save_dir: Path,
+    source_lang: str,
+    target_lang: str,
+    columns: Optional[List[str]],
+    column_type_filters: Optional[List[str]],
+    protected_words: List[str],
+    file_format: str,
+    output_file_format: str,
+    **kwargs,
+):
+    if column_type_filters is None and columns is None:
+        column_type_filters = ["string"]
+
+    proxy = kwargs.pop("proxy", None)
+    google_api_key = kwargs.pop("google_api_key", None)
+    rate_limit_per_sec = kwargs.pop("rate_limit_per_sec", None)
+    translator = kwargs.pop(
+        "translator", create_translator(google_api_key, proxy)
+    )
+    rate_limiter = kwargs.pop(
+        "rate_limiter",
+        TokenBucket(rate_limit_per_sec) if rate_limit_per_sec else None,
+    )
+    await translate_dataset_file(
+        input_path=input_path,
+        save_dir=save_dir,
+        source_lang=source_lang,
+        target_lang=target_lang,
+        columns=columns,
+        column_type_filters=column_type_filters,
+        protected_words=protected_words,
+        file_format=file_format,
+        output_file_format=output_file_format,
+        translator=translator,
+        rate_limiter=rate_limiter,
         **kwargs,
     )
 
@@ -770,14 +992,18 @@ async def translate_hf_dataset_entry(
     output_file_format: str,
     subset: Optional[str],
     splits: Optional[List[str]],
+    hf_cache_dir: Optional[Path],
     **kwargs,
 ):
-    hf_cache = save_dir / "hf_cache"
+    ensure_output_root(save_dir)
+    dataset_label = dataset_name if not subset else f"{dataset_name}_{subset}"
+    run_dir = build_run_dir(save_dir, dataset_label, source_lang, target_lang)
+    hf_cache = hf_cache_dir or resolve_hf_cache_dir(save_dir)
     datasets_dict = load_hf_splits(dataset_name, subset, splits, hf_cache)
 
     for split_name, dataset in datasets_dict.items():
         print(f"Processing split: {split_name}")
-        split_dir = save_dir / split_name
+        split_dir = run_dir / split_name
         split_dir.mkdir(parents=True, exist_ok=True)
 
         selected_cols = select_columns_from_hf(
@@ -847,8 +1073,11 @@ def main(
     ),
     subset: Optional[str] = typer.Option(None, "--subset", "--config"),
     splits: Optional[List[str]] = typer.Option(None, "--split", "-s"),
+    hf_cache_dir: Optional[Path] = typer.Option(
+        None, "--hf-cache-dir", help="Shared HF cache directory"
+    ),
 ):
-    save_dir.mkdir(parents=True, exist_ok=True)
+    ensure_output_root(save_dir)
     protected = load_protected_words(protected_words)
     filters = (
         normalize_column_types(column_types)
@@ -887,6 +1116,7 @@ def main(
                 output_file_format=output_file_format,
                 subset=subset,
                 splits=splits,
+                hf_cache_dir=hf_cache_dir,
                 **common_kwargs,
             )
         )

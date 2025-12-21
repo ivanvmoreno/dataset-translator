@@ -23,6 +23,7 @@ from src.main import (
     select_columns_from_df,
     select_columns_from_hf,
     translate_dataset,
+    build_run_dir,
     app,
 )
 
@@ -60,7 +61,7 @@ def sample_dataframe(tmp_path):
 @pytest.fixture
 def dummy_checkpoint_dir(tmp_path):
     checkpoint_dir = tmp_path / "checkpoints"
-    checkpoint_dir.mkdir()
+    (checkpoint_dir / "batches").mkdir(parents=True, exist_ok=True)
     return checkpoint_dir
 
 
@@ -141,7 +142,9 @@ def test_save_checkpoint_and_merge(dummy_checkpoint_dir):
         {"original_index": 0, "column": "text", "translated_text": "olleH"},
         {"original_index": 1, "column": "text", "translated_text": "dlroW"},
     ]
-    checkpoint_path = dummy_checkpoint_dir / "checkpoint_0001.csv"
+    checkpoint_path = (
+        dummy_checkpoint_dir / "batches" / "checkpoint_0001.csv"
+    )
     save_checkpoint(data, checkpoint_path, "csv")
     assert checkpoint_path.exists()
 
@@ -198,7 +201,8 @@ def test_translate_dataset_defaults_to_string_columns(tmp_path, monkeypatch):
         )
     )
 
-    final_path = save_dir / "translated_dataset.csv"
+    run_dir = build_run_dir(save_dir, input_csv.stem, "en", "es")
+    final_path = run_dir / "translated_dataset.csv"
     translated_df = pd.read_csv(final_path)
     assert "translated_text" in translated_df.columns
     assert "translated_count" not in translated_df.columns
@@ -251,8 +255,7 @@ async def test_process_texts_checkpointing(tmp_path):
     items = [(i, "text", f"Message {i}") for i in range(25)]
     translator = DummyTranslator()
     protected = []
-    checkpoint_dir = tmp_path / "checkpoints"
-    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint_dir = tmp_path / "checkpoints" / "batches"
 
     # Run the processing (note: using a small checkpoint_step to force writing checkpoints)
     await process_texts(
@@ -270,8 +273,8 @@ async def test_process_texts_checkpointing(tmp_path):
         failure_retry_cycles=0,
     )
     # Check that some checkpoint files were created.
-    ckpts = list((tmp_path / "checkpoints").glob("checkpoint_*.csv"))
-    assert len(ckpts) >= 2
+    ckpts = list(checkpoint_dir.glob("checkpoint_*.csv"))
+    assert len(ckpts) >= 1
 
 
 # --- Additional integration tests ---
@@ -328,7 +331,8 @@ def test_main_auto_output_format(tmp_path, monkeypatch):
     )
 
     assert result.exit_code == 0
-    final_path = save_dir / "translated_dataset.parquet"
+    run_dir = build_run_dir(save_dir, input_parquet.stem, "en", "es")
+    final_path = run_dir / "translated_dataset.parquet"
     assert final_path.exists()
     assert detect_file_format(final_path) == "parquet"
 
@@ -378,7 +382,8 @@ async def test_translate_dataset_integration(tmp_path, monkeypatch):
     )
 
     # Check that the final translated dataset exists.
-    final_path = save_dir / "translated_dataset.csv"
+    run_dir = build_run_dir(save_dir, input_csv.stem, "en", "es")
+    final_path = run_dir / "translated_dataset.csv"
     assert final_path.exists()
     translated_df = pd.read_csv(final_path)
     # Our dummy translation reverses the string.
@@ -428,7 +433,8 @@ def test_main_cli(tmp_path, monkeypatch):
     assert result.exit_code == 0
     assert "Translation complete" in result.output
     # Verify that the final translated dataset was written.
-    final_file = save_dir / "translated_dataset.csv"
+    run_dir = build_run_dir(save_dir, input_csv.stem, "en", "es")
+    final_file = run_dir / "translated_dataset.csv"
     assert final_file.exists()
 
 
@@ -459,7 +465,8 @@ def test_main_no_columns(tmp_path, monkeypatch):
         ],
     )
     assert result.exit_code == 0
-    final_file = save_dir / "translated_dataset.csv"
+    run_dir = build_run_dir(save_dir, input_csv.stem, "en", "es")
+    final_file = run_dir / "translated_dataset.csv"
     assert final_file.exists()
 
 

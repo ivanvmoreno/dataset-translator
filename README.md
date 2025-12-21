@@ -53,6 +53,14 @@ A robust CLI tool for translating text columns in datasets using Google Translat
   -c instruction -c output
 ```
 
+### Output Layout
+
+Each run creates a dedicated subdirectory under `save_dir` to prevent collisions:
+
+- `<save_dir>/<dataset>__<source>_to_<target>/translated_dataset.<format>`
+- Checkpoints: `checkpoints/batches/checkpoint_XXXX.<format>`
+- Failures: `checkpoints/failures/translation_failures.<format>`
+
 ### Key Options
 
 | Option | Description |
@@ -71,12 +79,13 @@ A robust CLI tool for translating text columns in datasets using Google Translat
 | `--rate-limit` | Max translation requests per second (applied per batch). |
 | `--proxy` | HTTP/HTTPS proxy URL. Protocol must be specified. (e.g., `http://<proxy_host>:<proxy_port>`). |
 | `--google-api-key` | Google Cloud Translation API key. When provided, the Cloud Translation API is used instead of the free Google Translate endpoint. |
+| `--hf-cache-dir` | Shared Hugging Face cache directory (defaults to `<save_dir>/../hf_cache`). |
 | `--help` | Show help message and exit. |
 
 ### Hugging Face Datasets 🤗
 
-Translate datasets from the Hub by passing `--hf` and using the dataset name in place of the input path. Each split is translated into its own subdirectory under `save_dir`.
-Downloads are cached locally under `save_dir/hf_cache` and reused on resume.
+Translate datasets from the Hub by passing `--hf` and using the dataset name in place of the input path. Each split is translated into its own subdirectory under the run directory in `save_dir`.
+Downloads are cached locally in a shared sibling directory (`<save_dir>/../hf_cache`) and reused on resume.
 
 ```bash
 > dataset-translator imdb ./output en es \
