@@ -6,7 +6,7 @@ import uuid
 from collections import defaultdict
 from pathlib import Path
 from dataclasses import dataclass
-from typing import Dict, List, Literal, Optional, Protocol, Tuple
+from typing import Dict, Iterable, List, Literal, Optional, Protocol, Tuple
 
 import jsonlines
 import pandas as pd
@@ -14,6 +14,8 @@ from pandas import DataFrame
 import typer
 from google.cloud import translate_v2 as translate_v2
 from googletrans import Translator
+from datasets import Dataset, DatasetDict, Sequence, Value
+from datasets import load_dataset as hf_load_dataset
 from tqdm import tqdm
 
 
@@ -57,7 +59,11 @@ class TokenBucket:
                     self._tokens -= tokens
                     return
                 wait_for = (tokens - self._tokens) / self._rate
-            await asyncio.sleep(wait_for)
+
+        await asyncio.sleep(wait_for)
+
+
+VALID_COLUMN_TYPES = {"string", "list[string]"}
 
 
 class CloudTranslator:
@@ -128,6 +134,79 @@ def load_protected_words(protected_words_arg: Optional[str]) -> List[str]:
             for word in protected_words_arg.split(",")
             if word.strip()
         ]
+
+
+def normalize_column_types(
+    column_types: Optional[Iterable[str]],
+) -> List[str]:
+    if not column_types:
+        return []
+    normalized = []
+    for entry in column_types:
+        for raw in entry.split(","):
+            value = raw.strip().lower()
+            if value:
+                normalized.append(value)
+    invalid = sorted(
+        {value for value in normalized if value not in VALID_COLUMN_TYPES}
+    )
+    if invalid:
+        raise ValueError(
+            f"Unsupported column type(s): {', '.join(invalid)}. "
+            f"Supported types: {', '.join(sorted(VALID_COLUMN_TYPES))}."
+        )
+    return sorted(set(normalized))
+
+
+def _series_is_string(series: pd.Series) -> bool:
+    if pd.api.types.is_string_dtype(series):
+        return True
+    if series.dtype != object:
+        return False
+    values = series.dropna()
+    if values.empty:
+        return False
+    return all(isinstance(value, str) for value in values)
+
+
+def _series_is_list_of_strings(series: pd.Series) -> bool:
+    values = series.dropna()
+    if values.empty:
+        return False
+    for value in values:
+        if not isinstance(value, (list, tuple)):
+            return False
+        if not all(isinstance(item, str) for item in value):
+            return False
+    return True
+
+
+def select_columns_from_df(
+    df: pd.DataFrame,
+    columns: Optional[List[str]],
+    column_type_filters: Optional[List[str]],
+) -> List[str]:
+    if columns:
+        missing = [col for col in columns if col not in df.columns]
+        if missing:
+            raise ValueError(f"Column(s) not found in DataFrame: {missing}")
+        selected = list(columns)
+    else:
+        selected = list(df.columns)
+
+    if column_type_filters:
+        type_set = set(column_type_filters)
+        filtered = []
+        for col in selected:
+            series = df[col]
+            is_string = _series_is_string(series)
+            is_list_string = _series_is_list_of_strings(series)
+            if "string" in type_set and is_string:
+                filtered.append(col)
+            elif "list[string]" in type_set and is_list_string:
+                filtered.append(col)
+        selected = filtered
+    return selected
 
 
 def replace_protected_words(
@@ -430,7 +509,7 @@ def detect_file_format(file_path: Path) -> Literal["csv", "parquet", "jsonl"]:
         raise ValueError(f"Unsupported file format: {file_path.suffix}")
 
 
-def load_dataset(
+def load_tabular_dataset(
     file_path: Path, file_format: Optional[str] = None
 ) -> pd.DataFrame:
     """Load dataset from CSV or Parquet file."""
@@ -481,7 +560,7 @@ def merge_checkpoints(
     """Combine all checkpoint files into a single translation mapping."""
     merged = defaultdict(dict)
     for ckpt in checkpoint_dir.glob(f"checkpoint_*.{file_format}"):
-        df = load_dataset(ckpt, file_format)
+        df = load_tabular_dataset(ckpt, file_format)
         for _, row in df.iterrows():
             if "translated_text" in row:
                 merged[row["original_index"]][row["column"]] = row[
@@ -490,28 +569,79 @@ def merge_checkpoints(
     return merged
 
 
-async def translate_dataset(
-    input_path: Path,
+def select_columns_from_hf(
+    dataset,
+    columns: Optional[List[str]],
+    column_type_filters: Optional[List[str]],
+) -> List[str]:
+    if columns:
+        missing = [col for col in columns if col not in dataset.column_names]
+        if missing:
+            raise ValueError(
+                f"Column(s) not found in Hugging Face dataset: {missing}"
+            )
+        selected = list(columns)
+    else:
+        selected = list(dataset.column_names)
+
+    if not column_type_filters:
+        return selected
+
+    type_set = set(column_type_filters)
+    filtered = []
+    for col in selected:
+        feature = dataset.features.get(col)
+        is_string = isinstance(feature, Value) and feature.dtype == "string"
+        is_list_string = (
+            isinstance(feature, Sequence)
+            and isinstance(feature.feature, Value)
+            and feature.feature.dtype == "string"
+        )
+        if "string" in type_set and is_string:
+            filtered.append(col)
+        elif "list[string]" in type_set and is_list_string:
+            filtered.append(col)
+    return filtered
+
+
+def load_hf_splits(
+    dataset_name: str,
+    subset: Optional[str],
+    splits: Optional[List[str]],
+):
+    if splits:
+        return {
+            split: hf_load_dataset(dataset_name, name=subset, split=split)
+            for split in splits
+        }
+
+    loaded = hf_load_dataset(dataset_name, name=subset)
+    if isinstance(loaded, DatasetDict):
+        return dict(loaded)
+    if isinstance(loaded, Dataset):
+        return {"data": loaded}
+    raise ValueError("Unsupported Hugging Face dataset type.")
+
+
+async def translate_dataframe(
+    df: pd.DataFrame,
     save_dir: Path,
     source_lang: str,
     target_lang: str,
     columns: Optional[List[str]],
+    column_type_filters: Optional[List[str]],
     protected_words: List[str],
     file_format: str,
     output_file_format: str,
+    translator: AsyncTranslator,
+    rate_limiter: Optional[TokenBucket],
     batch_size: int = 20,
     max_concurrency: int = 10,
     checkpoint_step: int = 100,
     max_retries: int = 3,
     failure_retry_cycles: int = 1,
     only_failed: bool = False,
-    proxy: Optional[str] = None,
-    google_api_key: Optional[str] = None,
-    rate_limit_per_sec: Optional[float] = None,
-):
-    """Main translation workflow with --only-failed support."""
-    df = load_dataset(input_path, file_format)
-
+) -> None:
     if only_failed:
         failures_path = (
             save_dir / "checkpoints" / f"translation_failures.{file_format}"
@@ -520,7 +650,9 @@ async def translate_dataset(
             raise FileNotFoundError(
                 f"No failures file found at {failures_path}"
             )
-        failures_df: DataFrame = load_dataset(failures_path, file_format)
+        failures_df: DataFrame = load_tabular_dataset(
+            failures_path, file_format
+        )
         required_cols: list = [
             "original_index",
             "column",
@@ -530,6 +662,11 @@ async def translate_dataset(
             raise ValueError(
                 f"Failures file missing required columns: {required_cols}"
             )
+        if column_type_filters:
+            eligible = select_columns_from_df(df, None, column_type_filters)
+            columns = (
+                [c for c in columns if c in eligible] if columns else eligible
+            )
         if columns:
             failures_df = failures_df[failures_df["column"].isin(columns)]
         items = [
@@ -537,15 +674,16 @@ async def translate_dataset(
             for _, row in failures_df.iterrows()
         ]
     else:
-        if not columns:
+        selected_columns = select_columns_from_df(
+            df, columns, column_type_filters
+        )
+        if not selected_columns:
             raise ValueError(
-                "Columns must be specified when not using --only-failed"
+                "No columns selected for translation after applying filters."
             )
         items = []
         for idx, row in df.iterrows():
-            for col in columns:
-                if col not in df.columns:
-                    raise ValueError(f"Column '{col}' not found in DataFrame.")
+            for col in selected_columns:
                 text = row[col]
                 if isinstance(text, str) and text.strip():
                     items.append((idx, col, text))
@@ -554,16 +692,6 @@ async def translate_dataset(
     if not columns_used:
         print("No items to translate.")
         return
-
-    translator: AsyncTranslator = create_translator(
-        google_api_key=google_api_key,
-        proxy=proxy,
-    )
-    rate_limiter = None
-    if rate_limit_per_sec is not None:
-        if rate_limit_per_sec <= 0:
-            raise ValueError("rate_limit_per_sec must be > 0")
-        rate_limiter = TokenBucket(rate_limit_per_sec)
 
     await process_texts(
         items=items,
@@ -595,13 +723,134 @@ async def translate_dataset(
     print(f"✅ Translation complete! Final dataset saved to {final_path}")
 
 
+async def translate_dataset(
+    input_path: Path,
+    save_dir: Path,
+    source_lang: str,
+    target_lang: str,
+    columns: Optional[List[str]],
+    column_type_filters: Optional[List[str]],
+    protected_words: List[str],
+    file_format: str,
+    output_file_format: str,
+    batch_size: int = 20,
+    max_concurrency: int = 10,
+    checkpoint_step: int = 100,
+    max_retries: int = 3,
+    failure_retry_cycles: int = 1,
+    only_failed: bool = False,
+    proxy: Optional[str] = None,
+    google_api_key: Optional[str] = None,
+    rate_limit_per_sec: Optional[float] = None,
+):
+    df = load_tabular_dataset(input_path, file_format)
+    if columns is None and not column_type_filters:
+        column_type_filters = ["string"]
+
+    translator: AsyncTranslator = create_translator(
+        google_api_key=google_api_key,
+        proxy=proxy,
+    )
+    rate_limiter = None
+    if rate_limit_per_sec is not None:
+        if rate_limit_per_sec <= 0:
+            raise ValueError("rate_limit_per_sec must be > 0")
+        rate_limiter = TokenBucket(rate_limit_per_sec)
+
+    await translate_dataframe(
+        df=df,
+        save_dir=save_dir,
+        source_lang=source_lang,
+        target_lang=target_lang,
+        columns=columns,
+        column_type_filters=column_type_filters,
+        protected_words=protected_words,
+        file_format=file_format,
+        output_file_format=output_file_format,
+        translator=translator,
+        rate_limiter=rate_limiter,
+        batch_size=batch_size,
+        max_concurrency=max_concurrency,
+        checkpoint_step=checkpoint_step,
+        max_retries=max_retries,
+        failure_retry_cycles=failure_retry_cycles,
+        only_failed=only_failed,
+    )
+
+
+async def translate_hf_dataset(
+    dataset_name: str,
+    save_dir: Path,
+    source_lang: str,
+    target_lang: str,
+    columns: Optional[List[str]],
+    column_type_filters: Optional[List[str]],
+    protected_words: List[str],
+    output_file_format: str,
+    batch_size: int = 20,
+    max_concurrency: int = 10,
+    checkpoint_step: int = 100,
+    max_retries: int = 3,
+    failure_retry_cycles: int = 1,
+    only_failed: bool = False,
+    proxy: Optional[str] = None,
+    google_api_key: Optional[str] = None,
+    rate_limit_per_sec: Optional[float] = None,
+    subset: Optional[str] = None,
+    splits: Optional[List[str]] = None,
+) -> None:
+    datasets = load_hf_splits(dataset_name, subset, splits)
+    if columns is None and not column_type_filters:
+        column_type_filters = ["string"]
+    translator: AsyncTranslator = create_translator(
+        google_api_key=google_api_key,
+        proxy=proxy,
+    )
+    rate_limiter = None
+    if rate_limit_per_sec is not None:
+        if rate_limit_per_sec <= 0:
+            raise ValueError("rate_limit_per_sec must be > 0")
+        rate_limiter = TokenBucket(rate_limit_per_sec)
+
+    for split_name, dataset in datasets.items():
+        selected_columns = select_columns_from_hf(
+            dataset, columns, column_type_filters
+        )
+        if not selected_columns and not only_failed:
+            raise ValueError(
+                f"No columns selected for split '{split_name}' after applying filters."
+            )
+        split_dir = save_dir / split_name
+        split_dir.mkdir(parents=True, exist_ok=True)
+        df = dataset.to_pandas()
+        await translate_dataframe(
+            df=df,
+            save_dir=split_dir,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            columns=selected_columns,
+            column_type_filters=None,
+            protected_words=protected_words,
+            file_format=output_file_format,
+            output_file_format=output_file_format,
+            translator=translator,
+            rate_limiter=rate_limiter,
+            batch_size=batch_size,
+            max_concurrency=max_concurrency,
+            checkpoint_step=checkpoint_step,
+            max_retries=max_retries,
+            failure_retry_cycles=failure_retry_cycles,
+            only_failed=only_failed,
+        )
+
+
 app = typer.Typer()
 
 
 @app.command()
 def main(
     input_path: Path = typer.Argument(
-        ..., help="Path to input dataset (CSV or Parquet)"
+        ..., help="Path to input dataset (CSV, Parquet, or JSONL)"
     ),
     save_dir: Path = typer.Argument(
         ..., help="Directory to save translated data"
@@ -612,7 +861,13 @@ def main(
         None,
         "--columns",
         "-c",
-        help="Columns to translate (required unless --only-failed). Can be multiple. Pass the --columns (-c) flag multiple times to specify multiple columns.",
+        help="Columns to translate (defaults to string columns). Can be multiple. Pass the --columns (-c) flag multiple times to specify multiple columns.",
+    ),
+    column_types: Optional[List[str]] = typer.Option(
+        None,
+        "--column-type",
+        "-t",
+        help="Filter columns by type (string, list[string]). Can be provided multiple times or comma-separated.",
     ),
     protected_words: Optional[str] = typer.Option(
         None,
@@ -672,20 +927,69 @@ def main(
         "--rate-limit",
         help="Max translation requests per second. Token bucket is applied per batch.",
     ),
+    hf_dataset: bool = typer.Option(
+        False,
+        "--hf",
+        help="Treat input_path as a Hugging Face dataset name.",
+    ),
+    subset: Optional[str] = typer.Option(
+        None,
+        "--subset",
+        "--config",
+        help="Dataset subset/config name.",
+    ),
+    splits: Optional[List[str]] = typer.Option(
+        None,
+        "--split",
+        "-s",
+        help="Dataset split(s) to translate. Can be provided multiple times.",
+    ),
 ):
     """
     Translate columns in a dataset with support for retrying failed items.
     """
-    if not only_failed and not columns:
-        raise typer.BadParameter(
-            "You must specify --columns unless using --only-failed"
-        )
+    try:
+        column_type_filters = normalize_column_types(column_types)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc))
 
     if is_file_path(str(save_dir)):
         raise ValueError("save_dir must be a directory, not a file path.")
 
     protected = load_protected_words(protected_words)
     save_dir.mkdir(parents=True, exist_ok=True)
+
+    if hf_dataset:
+        if output_file_format == "auto":
+            output_file_format = "parquet"
+        if output_file_format not in {"csv", "parquet", "jsonl"}:
+            raise typer.BadParameter(
+                "output_file_format must be one of: csv, parquet, jsonl"
+            )
+        asyncio.run(
+            translate_hf_dataset(
+                dataset_name=str(input_path),
+                save_dir=save_dir,
+                source_lang=source_lang,
+                target_lang=target_lang,
+                columns=columns,
+                column_type_filters=column_type_filters,
+                protected_words=protected,
+                output_file_format=output_file_format,
+                batch_size=batch_size,
+                max_concurrency=max_concurrency,
+                checkpoint_step=checkpoint_step,
+                max_retries=max_retries,
+                failure_retry_cycles=failure_retry_cycles,
+                only_failed=only_failed,
+                proxy=proxy,
+                google_api_key=google_api_key,
+                rate_limit_per_sec=rate_limit_per_sec,
+                subset=subset,
+                splits=splits,
+            )
+        )
+        return
 
     if file_format == "auto":
         file_format = detect_file_format(input_path)
@@ -699,6 +1003,7 @@ def main(
             source_lang=source_lang,
             target_lang=target_lang,
             columns=columns,
+            column_type_filters=column_type_filters,
             protected_words=protected,
             file_format=file_format,
             output_file_format=output_file_format,

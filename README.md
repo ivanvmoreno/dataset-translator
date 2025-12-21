@@ -26,6 +26,8 @@ A robust CLI tool for translating text columns in datasets using Google Translat
   - Preserves specific terms/phrases from being translated.
 - **🚑 Failure Handling**
   - Supports re-processing of previously failed translations using a dedicated "only-failed" mode.
+- **🤗 Hugging Face Datasets**
+  - Translate datasets from the Hub with support for subsets/configs, splits, and column type filters.
 - **🌐 Proxy Support**
   - Supports HTTP/HTTPS proxies for network requests.
 
@@ -55,7 +57,8 @@ A robust CLI tool for translating text columns in datasets using Google Translat
 
 | Option | Description |
 |--------|-------------|
-| `--columns \| -c` | Columns to translate (multiple allowed). Required unless using `--only-failed`. You can pass this flag multiple times for several columns. |
+| `--columns \| -c` | Columns to translate (multiple allowed). Defaults to string columns. You can pass this flag multiple times for several columns. |
+| `--column-type \| -t` | Filter columns by type (`string`, `list[string]`). Can be provided multiple times or comma-separated. |
 | `--protected-words \| -p` | Comma-separated list or `@file.txt` of protected words. |
 | `--file-format \| -f` | File format (`csv`, `parquet`, `jsonl`, `auto`). If not specified, file format will be inferred from the input file path. (default: `auto`). |
 | `--output-file-format` | Output file format (`csv`, `parquet`, `jsonl`, `auto`). If not specified, output format will be fallback to input file format. (default: `auto`). |
@@ -69,6 +72,27 @@ A robust CLI tool for translating text columns in datasets using Google Translat
 | `--proxy` | HTTP/HTTPS proxy URL. Protocol must be specified. (e.g., `http://<proxy_host>:<proxy_port>`). |
 | `--google-api-key` | Google Cloud Translation API key. When provided, the Cloud Translation API is used instead of the free Google Translate endpoint. |
 | `--help` | Show help message and exit. |
+
+### Hugging Face Datasets 🤗
+
+Translate datasets from the Hub by passing `--hf` and using the dataset name in place of the input path. Each split is translated into its own subdirectory under `save_dir`.
+
+```bash
+> dataset-translator imdb ./output en es \
+  --hf \
+  --split train --split test \
+  --column-type string
+```
+
+Use `--subset` (or `--config`) for dataset configurations, and `--columns` / `--column-type` to control which fields get translated (defaults to string columns).
+
+Common HF options:
+
+| Option | Description |
+|--------|-------------|
+| `--hf` | Treat the input path as a Hugging Face dataset name. |
+| `--subset \| --config` | Dataset subset/config name. |
+| `--split \| -s` | Split(s) to translate; can be provided multiple times. |
 
 ## Supported Languages
 

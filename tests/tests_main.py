@@ -6,9 +6,11 @@ import pandas as pd
 import pytest
 from typer.testing import CliRunner
 import jsonlines
+from datasets import Dataset
 
 from src.main import (
     load_protected_words,
+    normalize_column_types,
     replace_protected_words,
     restore_protected_words,
     process_batch,
@@ -18,6 +20,8 @@ from src.main import (
     save_dataset,
     save_checkpoint,
     merge_checkpoints,
+    select_columns_from_df,
+    select_columns_from_hf,
     translate_dataset,
     app,
 )
@@ -146,6 +150,71 @@ def test_save_checkpoint_and_merge(dummy_checkpoint_dir):
     # merged is a dict mapping original_index to dicts of column: translated_text.
     assert 0 in merged
     assert merged[0]["text"] == "olleH"
+
+
+def test_select_columns_from_df_by_type():
+    df = pd.DataFrame(
+        {
+            "text": ["one", "two"],
+            "tags": [["a", "b"], ["c"]],
+            "count": [1, 2],
+        }
+    )
+    types = normalize_column_types(["string", "list[string]"])
+    selected = select_columns_from_df(df, None, types)
+    assert set(selected) == {"text", "tags"}
+
+
+def test_translate_dataset_defaults_to_string_columns(tmp_path, monkeypatch):
+    df = pd.DataFrame({"text": ["Hello"], "count": [1]})
+    input_csv = tmp_path / "input.csv"
+    df.to_csv(input_csv, index=False)
+    save_dir = tmp_path / "output"
+    save_dir.mkdir()
+
+    monkeypatch.setattr(
+        "src.main.Translator", lambda **kwargs: DummyTranslator()
+    )
+
+    asyncio.run(
+        translate_dataset(
+            input_path=input_csv,
+            save_dir=save_dir,
+            source_lang="en",
+            target_lang="es",
+            columns=None,
+            column_type_filters=None,
+            protected_words=[],
+            file_format="csv",
+            output_file_format="csv",
+            batch_size=1,
+            max_concurrency=1,
+            checkpoint_step=1,
+            max_retries=1,
+            failure_retry_cycles=0,
+            only_failed=False,
+            proxy=None,
+            google_api_key=None,
+        )
+    )
+
+    final_path = save_dir / "translated_dataset.csv"
+    translated_df = pd.read_csv(final_path)
+    assert "translated_text" in translated_df.columns
+    assert "translated_count" not in translated_df.columns
+
+
+def test_select_columns_from_hf_by_type():
+    dataset = Dataset.from_dict(
+        {
+            "text": ["hello", "world"],
+            "tags": [["a", "b"], ["c"]],
+            "count": [1, 2],
+        }
+    )
+    types = normalize_column_types(["string", "list[string]"])
+    selected = select_columns_from_hf(dataset, None, types)
+    assert set(selected) == {"text", "tags"}
 
 
 # --- Tests for asynchronous translation functions ---
@@ -294,6 +363,7 @@ async def test_translate_dataset_integration(tmp_path, monkeypatch):
         source_lang="en",
         target_lang="es",
         columns=["text"],
+        column_type_filters=None,
         protected_words=[],
         file_format="csv",
         output_file_format="csv",
@@ -365,14 +435,19 @@ def test_main_cli(tmp_path, monkeypatch):
 # --- Additional tests for error conditions ---
 
 
-def test_main_no_columns(tmp_path):
-    # When --only-failed is False and no columns are provided, main should raise an error.
+def test_main_no_columns(tmp_path, monkeypatch):
+    # When no columns are provided, translate all columns.
     runner = CliRunner()
     df = pd.DataFrame({"text": ["Hello"]})
     input_csv = tmp_path / "input.csv"
     df.to_csv(input_csv, index=False)
     save_dir = tmp_path / "translated"
     save_dir.mkdir()
+
+    monkeypatch.setattr(
+        "src.main.Translator", lambda **kwargs: DummyTranslator()
+    )
+
     result = runner.invoke(
         app,
         [
@@ -383,9 +458,9 @@ def test_main_no_columns(tmp_path):
             # No --columns argument provided.
         ],
     )
-    # Expect a nonzero exit code and error message about missing columns.
-    assert result.exit_code != 0
-    assert "must specify --columns" in result.output
+    assert result.exit_code == 0
+    final_file = save_dir / "translated_dataset.csv"
+    assert final_file.exists()
 
 
 # --- Test failing when output path is a directory ---
