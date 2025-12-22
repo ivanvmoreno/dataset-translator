@@ -101,10 +101,20 @@ def normalize_target_langs(target_lang: str) -> List[str]:
     return langs or [target_lang]
 
 
+def normalize_source_lang(source_lang: Optional[str]) -> str:
+    if not source_lang:
+        return "auto"
+    cleaned = source_lang.strip()
+    return cleaned or "auto"
+
+
 def build_run_dir(
-    save_dir: Path, label: str, source_lang: str, target_lang: str
+    save_dir: Path, label: str, source_lang: Optional[str], target_lang: str
 ) -> Path:
-    run_name = f"{sanitize_run_label(label)}__{source_lang}_to_{target_lang}"
+    run_name = (
+        f"{sanitize_run_label(label)}__"
+        f"{normalize_source_lang(source_lang)}_to_{target_lang}"
+    )
     run_dir = save_dir / run_name
     run_dir.mkdir(parents=True, exist_ok=True)
     return run_dir
@@ -199,14 +209,13 @@ class CloudTranslator:
         return await asyncio.to_thread(self._translate_sync, texts, src, dest)
 
     def _translate_sync(
-        self, texts: List[str], src: str, dest: str
+        self, texts: List[str], src: Optional[str], dest: str
     ) -> List[TranslationResult]:
-        results = self.client.translate(
-            texts,
-            source_language=src,
-            target_language=dest,
-            format_="text",
-        )
+        src_lang = normalize_source_lang(src)
+        request = {"target_language": dest, "format_": "text"}
+        if src_lang != "auto":
+            request["source_language"] = src_lang
+        results = self.client.translate(texts, **request)
         if isinstance(texts, str):
             results = [results]
         return [
@@ -238,7 +247,8 @@ class FallbackAsyncTranslator:
         return [TranslationResult(r.text) for r in results]
 
     def _translate_sync(self, texts: List[str], src: str, dest: str) -> Any:
-        return self.translator.translate(texts, src=src, dest=dest)
+        src_lang = normalize_source_lang(src)
+        return self.translator.translate(texts, src=src_lang, dest=dest)
 
 
 def create_translator(
@@ -578,6 +588,16 @@ async def process_texts(
     rate_limiter: Optional[TokenBucket] = None,
 ) -> List[Dict]:
     ensure_output_root(save_dir)
+    if target_lang is None:
+        if source_lang is None:
+            raise ValueError(
+                "target_lang is required when source_lang is omitted"
+            )
+        target_lang = source_lang
+        source_lang = "auto"
+    if source_lang is None:
+        source_lang = "auto"
+    source_lang = normalize_source_lang(source_lang)
     checkpoint_root, checkpoint_batches_dir, checkpoint_failures_dir = (
         prepare_checkpoint_dirs(save_dir)
     )
@@ -1113,8 +1133,12 @@ def main(
         ..., help="Path to input dataset OR HF dataset name"
     ),
     save_dir: Path = typer.Argument(..., help="Directory to save output"),
-    source_lang: str = typer.Argument(..., help="Source language code"),
-    target_lang: str = typer.Argument(..., help="Target language code"),
+    source_lang: Optional[str] = typer.Argument(
+        None, help="Source language code (optional; defaults to auto-detect)"
+    ),
+    target_lang: Optional[str] = typer.Argument(
+        None, help="Target language code"
+    ),
     columns: Optional[List[str]] = typer.Option(
         None, "--columns", "-c", help="Specific columns to translate"
     ),

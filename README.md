@@ -51,7 +51,7 @@ A robust CLI tool for translating text columns in datasets using Google Translat
 ## Usage
 
 ```bash
-> dataset-translator <path_to_dataset> ./output en eu \
+> dataset-translator <path_to_dataset> ./output eu \
   -c instruction -c output
 ```
 
@@ -62,17 +62,25 @@ Multi-target example (comma-separated targets):
   -c instruction -c output
 ```
 
+You can omit the source language to auto-detect it:
+
+```bash
+> dataset-translator <path_to_dataset> ./output es \
+  -c instruction -c output
+```
+
 ### Output Layout
 
 Each run creates a dedicated subdirectory under `save_dir` to prevent collisions:
 
-- `<save_dir>/<dataset>__<source>_to_<target>/translated_dataset.<format>`
+- `<save_dir>/<dataset>__<source>_to_<target>/translated_dataset.<format>` (use `auto` when source is auto-detected)
 - Checkpoints: `checkpoints/batches/checkpoint_XXXX.<format>`
 - Failures: `checkpoints/failures/translation_failures.<format>`
 
 ### Key Options
 
 The `target_lang` positional argument can be a single language code or a comma-separated list for multi-target output.
+If `source_lang` is omitted, it defaults to auto-detection.
 
 | Option | Description |
 |--------|-------------|
