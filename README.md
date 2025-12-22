@@ -28,6 +28,10 @@ A robust CLI tool for translating text columns in datasets using Google Translat
   - Preserves specific terms/phrases from being translated.
 - **🚑 Failure Handling**
   - Supports re-processing of previously failed translations using a dedicated "only-failed" mode.
+- **🧭 Auto Source Detection**
+  - Omit the source language to auto-detect it (per batch).
+- **🧩 Schema Control**
+  - Filter by column types and optionally replace columns in-place.
 - **🤗 Hugging Face Datasets**
   - Translate datasets from the Hub with support for subsets/configs, splits, and column type filters.
 - **🌐 Proxy Support**
@@ -75,7 +79,7 @@ Each run creates a dedicated subdirectory under `save_dir` to prevent collisions
 
 - `<save_dir>/<dataset>__<source>_to_<target>/translated_dataset.<format>` (use `auto` when source is auto-detected)
 - Checkpoints: `checkpoints/batches/checkpoint_XXXX.<format>`
-- Failures: `checkpoints/failures/translation_failures.<format>`
+- Failures: `checkpoints/failures/translation_failures.csv` (or `.parquet` for parquet inputs)
 
 ### Key Options
 
@@ -90,9 +94,9 @@ If `source_lang` is omitted, it defaults to auto-detection.
 | `--file-format \| -f` | File format (`csv`, `parquet`, `jsonl`, `auto`). If not specified, file format will be inferred from the input file path. (default: `auto`). |
 | `--output-file-format` | Output file format (`csv`, `parquet`, `jsonl`, `auto`). If not specified, output format will be fallback to input file format. (default: `auto`). |
 | `--replace-columns` | Replace translated columns in-place to keep the output schema identical to the input. |
-| `--batch-size \| -b` | Number of texts per translation request (default: `1`). |
-| `--max-concurrency` | Maximum concurrent translation requests (default: `1`). |
-| `--checkpoint-step` | Number of successful translations between checkpoints (default: `500`). |
+| `--batch-size \| -b` | Number of texts per translation request (default: `20`). |
+| `--max-concurrency` | Maximum concurrent translation requests (default: `10`). |
+| `--checkpoint-step` | Number of successful translations between checkpoints (default: `100`). |
 | `--max-retries` | Maximum retry attempts per batch before marking as failed (default: `3`). |
 | `--max-failure-cycles` | Number of full retry cycles for previously failed translations (default: `3`). |
 | `--only-failed` | Process only previously failed translations from the checkpoint directory (default: `False`). |
@@ -106,6 +110,7 @@ If `source_lang` is omitted, it defaults to auto-detection.
 
 Translate datasets from the Hub by passing `--hf` and using the dataset name in place of the input path. Each split is translated into its own subdirectory under the run directory in `save_dir`.
 Downloads are cached locally in a shared sibling directory (`<save_dir>/../hf_cache`) and reused on resume.
+If `--output-file-format` is left as `auto`, HF outputs default to `jsonl`.
 
 ```bash
 > dataset-translator imdb ./output en es \
