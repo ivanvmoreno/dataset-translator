@@ -21,6 +21,7 @@ from typing import (
 import jsonlines
 import pandas as pd
 import typer
+from google.api_core.client_options import ClientOptions
 from google.cloud import translate_v2 as translate_v2
 from googletrans import Translator
 from datasets import Dataset, DatasetDict, DownloadMode, Sequence, Value
@@ -189,10 +190,8 @@ def save_dataset(df: pd.DataFrame, path: Path, file_format: str) -> None:
 class CloudTranslator:
     """Async wrapper for Google Cloud Translate SDK."""
 
-    def __init__(self, api_key: str):
-        if not api_key.strip():
-            raise ValueError("Google API key must be provided.")
-        self.client = translate_v2.Client(api_key=api_key)
+    def __init__(self):
+        self.client = translate_v2.Client()
 
     async def translate(
         self, texts: List[str], src: str, dest: str
@@ -243,10 +242,10 @@ class FallbackAsyncTranslator:
 
 
 def create_translator(
-    google_api_key: Optional[str], proxy: Optional[str]
+    use_cloud_api: bool, proxy: Optional[str]
 ) -> AsyncTranslator:
-    if google_api_key:
-        return CloudTranslator(google_api_key)
+    if use_cloud_api:
+        return CloudTranslator()
     return FallbackAsyncTranslator(proxy=proxy)
 
 
@@ -290,6 +289,18 @@ def normalize_column_types(column_types: Optional[Iterable[str]]) -> List[str]:
     if invalid:
         raise ValueError(f"Unsupported types: {', '.join(invalid)}")
     return sorted(set(normalized))
+
+
+def normalize_list_arg(values: Optional[Iterable[str]]) -> Optional[List[str]]:
+    if not values:
+        return None
+    normalized = []
+    for entry in values:
+        for raw in entry.split(","):
+            cleaned = raw.strip()
+            if cleaned:
+                normalized.append(cleaned)
+    return normalized or None
 
 
 def replace_protected_words(
@@ -770,6 +781,7 @@ async def orchestrate_translation(
     max_retries: int,
     failure_retry_cycles: int,
     only_failed: bool,
+    replace_columns: bool,
 ):
     checkpoint_root, checkpoint_batches_dir, checkpoint_failures_dir = (
         prepare_checkpoint_dirs(save_dir)
@@ -880,11 +892,14 @@ async def orchestrate_translation(
             if isinstance(dataset, (Dataset, Sequence))
             else dataset.iloc[0].to_dict()
         )
-        fieldnames = (
-            ["original_index"]
-            + list(dummy_row.keys())
-            + [f"translated_{c}" for c in columns]
-        )
+        if replace_columns:
+            fieldnames = list(dummy_row.keys())
+        else:
+            fieldnames = (
+                ["original_index"]
+                + list(dummy_row.keys())
+                + [f"translated_{c}" for c in columns]
+            )
         writer = csv.DictWriter(f_obj, fieldnames=fieldnames)
         writer.writeheader()
     else:
@@ -902,13 +917,19 @@ async def orchestrate_translation(
 
     for i in tqdm(iterator, desc="Writing Output"):
         row = getter(i)
-        record = {"original_index": i}
-        record.update(row)
+        record = dict(row)
 
-        if i in final_merged:
-            for col in columns:
-                if col in final_merged[i]:
-                    record[f"translated_{col}"] = final_merged[i][col]
+        if replace_columns:
+            if i in final_merged:
+                for col in columns:
+                    if col in final_merged[i]:
+                        record[col] = final_merged[i][col]
+        else:
+            record = {"original_index": i, **record}
+            if i in final_merged:
+                for col in columns:
+                    if col in final_merged[i]:
+                        record[f"translated_{col}"] = final_merged[i][col]
 
         if output_file_format == "jsonl":
             writer.write(record)
@@ -942,6 +963,7 @@ async def translate_dataset_file(
     protected_words: List[str],
     file_format: str,
     output_file_format: str,
+    replace_columns: bool = False,
     **kwargs,
 ):
     ensure_output_root(save_dir)
@@ -974,6 +996,7 @@ async def translate_dataset_file(
             protected_words=protected_words,
             file_format=file_format,
             output_file_format=output_file_format,
+            replace_columns=replace_columns,
             **kwargs,
         )
         overall.update(1)
@@ -990,16 +1013,18 @@ async def translate_dataset(
     protected_words: List[str],
     file_format: str,
     output_file_format: str,
+    replace_columns: bool = False,
     **kwargs,
 ):
     if column_type_filters is None and columns is None:
         column_type_filters = ["string"]
 
     proxy = kwargs.pop("proxy", None)
-    google_api_key = kwargs.pop("google_api_key", None)
+    use_cloud_api = kwargs.pop("use_cloud_api", False)
+    kwargs.pop("google_api_key", None)
     rate_limit_per_sec = kwargs.pop("rate_limit_per_sec", None)
     translator = kwargs.pop(
-        "translator", create_translator(google_api_key, proxy)
+        "translator", create_translator(use_cloud_api, proxy)
     )
     rate_limiter = kwargs.pop(
         "rate_limiter",
@@ -1015,6 +1040,7 @@ async def translate_dataset(
         protected_words=protected_words,
         file_format=file_format,
         output_file_format=output_file_format,
+        replace_columns=replace_columns,
         translator=translator,
         rate_limiter=rate_limiter,
         **kwargs,
@@ -1033,9 +1059,11 @@ async def translate_hf_dataset_entry(
     subset: Optional[str],
     splits: Optional[List[str]],
     hf_cache_dir: Optional[Path],
+    replace_columns: bool = False,
     **kwargs,
 ):
     ensure_output_root(save_dir)
+    kwargs.pop("use_cloud_api", None)
     dataset_label = dataset_name if not subset else f"{dataset_name}_{subset}"
     hf_cache = hf_cache_dir or resolve_hf_cache_dir(save_dir)
     datasets_dict = load_hf_splits(dataset_name, subset, splits, hf_cache)
@@ -1069,6 +1097,7 @@ async def translate_hf_dataset_entry(
                 protected_words=protected_words,
                 file_format="jsonl",
                 output_file_format=output_file_format,
+                replace_columns=replace_columns,
                 **kwargs,
             )
             overall.update(1)
@@ -1107,6 +1136,11 @@ def main(
     output_file_format: str = typer.Option(
         "auto", "--output-file-format", help="Output format"
     ),
+    replace_columns: bool = typer.Option(
+        False,
+        "--replace-columns",
+        help="Replace translated columns in-place (no extra columns)",
+    ),
     batch_size: int = typer.Option(20, "--batch-size", "-b"),
     max_concurrency: int = typer.Option(10, "--max-concurrency"),
     checkpoint_step: int = typer.Option(100, "--checkpoint-step"),
@@ -1114,7 +1148,9 @@ def main(
     failure_retry_cycles: int = typer.Option(3, "--max-failure-cycles"),
     only_failed: bool = typer.Option(False, "--only-failed"),
     proxy: Optional[str] = typer.Option(None, "--proxy"),
-    google_api_key: Optional[str] = typer.Option(None, "--google-api-key"),
+    use_cloud_api: bool = typer.Option(
+        False, "--use-cloud-api", help="Use Google Cloud Translate API"
+    ),
     rate_limit_per_sec: Optional[float] = typer.Option(None, "--rate-limit"),
     hf_dataset: bool = typer.Option(
         False, "--hf", help="Treat input_path as Hugging Face dataset name"
@@ -1127,13 +1163,15 @@ def main(
 ):
     ensure_output_root(save_dir)
     protected = load_protected_words(protected_words)
+    columns = normalize_list_arg(columns)
+    splits = normalize_list_arg(splits)
     filters = (
         normalize_column_types(column_types)
         if column_types
         else ["string"] if not columns else None
     )
 
-    translator = create_translator(google_api_key, proxy)
+    translator = create_translator(use_cloud_api, proxy)
     rate_limiter = (
         TokenBucket(rate_limit_per_sec) if rate_limit_per_sec else None
     )
@@ -1146,6 +1184,8 @@ def main(
         "protected_words": protected,
         "translator": translator,
         "rate_limiter": rate_limiter,
+        "replace_columns": replace_columns,
+        "use_cloud_api": use_cloud_api,
         "batch_size": batch_size,
         "max_concurrency": max_concurrency,
         "checkpoint_step": checkpoint_step,

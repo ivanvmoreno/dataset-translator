@@ -37,7 +37,7 @@ A robust CLI tool for translating text columns in datasets using Google Translat
 
 - This project is not affiliated with Google.
 - This project mainly relies on [py-googletrans](https://github.com/ssut/py-googletrans#how-does-this-library-work) work for reverse-engineering the Google Translate API. More info on this [here](https://github.com/ssut/py-googletrans#how-does-this-library-work).
-- To use Google Cloud Translation API, pass `--google-api-key` and ensure the Cloud Translation API is enabled for that key.
+- To use Google Cloud Translation API, pass `--use-cloud-api` and ensure the Cloud Translation API is enabled for your project and credentials.
 - Maximum length per text is `15,000` characters.
 - Your IP may be at risk of being blocked by Google if you abuse the service. Use responsibly (or consider using a proxy; see `--proxy` option).
 
@@ -81,6 +81,7 @@ The `target_lang` positional argument can be a single language code or a comma-s
 | `--protected-words \| -p` | Comma-separated list or `@file.txt` of protected words. |
 | `--file-format \| -f` | File format (`csv`, `parquet`, `jsonl`, `auto`). If not specified, file format will be inferred from the input file path. (default: `auto`). |
 | `--output-file-format` | Output file format (`csv`, `parquet`, `jsonl`, `auto`). If not specified, output format will be fallback to input file format. (default: `auto`). |
+| `--replace-columns` | Replace translated columns in-place to keep the output schema identical to the input. |
 | `--batch-size \| -b` | Number of texts per translation request (default: `1`). |
 | `--max-concurrency` | Maximum concurrent translation requests (default: `1`). |
 | `--checkpoint-step` | Number of successful translations between checkpoints (default: `500`). |
@@ -89,7 +90,7 @@ The `target_lang` positional argument can be a single language code or a comma-s
 | `--only-failed` | Process only previously failed translations from the checkpoint directory (default: `False`). |
 | `--rate-limit` | Max translation requests per second (applied per batch). |
 | `--proxy` | HTTP/HTTPS proxy URL. Protocol must be specified. (e.g., `http://<proxy_host>:<proxy_port>`). |
-| `--google-api-key` | Google Cloud Translation API key. When provided, the Cloud Translation API is used instead of the free Google Translate endpoint. |
+| `--use-cloud-api` | Use Google Cloud Translation API (auth via standard Google Cloud credentials). |
 | `--hf-cache-dir` | Shared Hugging Face cache directory (defaults to `<save_dir>/../hf_cache`). |
 | `--help` | Show help message and exit. |
 
