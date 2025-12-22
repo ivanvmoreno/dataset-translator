@@ -20,6 +20,8 @@ A robust CLI tool for translating text columns in datasets using Google Translat
   - Translates texts in batches to improve API efficiency.
 - **💾 Checkpointing**
   - Saves completed translations periodically to prevent data loss during long-running tasks. Supports resuming from the last checkpoint.
+- **🌍 Multi-target Translation**
+  - Translate to multiple target languages in a single run.
 - **🔄 Retry Mechanism**
   - Automatically retries failed translation batches with exponential backoff.
 - **🛡️ Protected Words**
@@ -53,6 +55,13 @@ A robust CLI tool for translating text columns in datasets using Google Translat
   -c instruction -c output
 ```
 
+Multi-target example (comma-separated targets):
+
+```bash
+> dataset-translator <path_to_dataset> ./output en es,fr,de \
+  -c instruction -c output
+```
+
 ### Output Layout
 
 Each run creates a dedicated subdirectory under `save_dir` to prevent collisions:
@@ -62,6 +71,8 @@ Each run creates a dedicated subdirectory under `save_dir` to prevent collisions
 - Failures: `checkpoints/failures/translation_failures.<format>`
 
 ### Key Options
+
+The `target_lang` positional argument can be a single language code or a comma-separated list for multi-target output.
 
 | Option | Description |
 |--------|-------------|

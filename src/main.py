@@ -4,7 +4,6 @@ import itertools
 import random
 import re
 import uuid
-import math
 from collections import defaultdict
 from pathlib import Path
 from dataclasses import dataclass
@@ -12,7 +11,6 @@ from typing import (
     Dict,
     Iterable,
     List,
-    Literal,
     Optional,
     Protocol,
     Tuple,
@@ -71,7 +69,7 @@ class TokenBucket:
                     return
                 wait_for = (tokens - self._tokens) / self._rate
 
-        await asyncio.sleep(wait_for)
+            await asyncio.sleep(wait_for)
 
 
 VALID_COLUMN_TYPES = {"string", "list[string]"}
@@ -91,6 +89,15 @@ def ensure_output_root(save_dir: Path) -> None:
 def sanitize_run_label(label: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", label).strip("._-")
     return cleaned or "dataset"
+
+
+def normalize_target_langs(target_lang: str) -> List[str]:
+    langs = []
+    for raw in target_lang.split(","):
+        cleaned = raw.strip()
+        if cleaned:
+            langs.append(cleaned)
+    return langs or [target_lang]
 
 
 def build_run_dir(
@@ -213,9 +220,8 @@ class FallbackAsyncTranslator:
     """Async wrapper for the synchronous googletrans library."""
 
     def __init__(self, proxy: Optional[str] = None):
-        # FIX 1: Remove 'proxies' arg from init (fixes the previous TypeError)
         self.translator = Translator()
-        self.proxy = proxy  # Store if needed for custom implementations, mostly unused in auto-mode
+        self.proxy = proxy
 
     async def translate(
         self, texts: List[str], src: str, dest: str
@@ -330,14 +336,36 @@ async def process_batch(
     rate_limiter: Optional[TokenBucket] = None,
 ) -> Tuple[List[Dict], List[Dict]]:
     """Process a single batch of text."""
-    processed_texts = []
-    placeholders_list = []
 
-    for _, _, text in batch:
+    successes = []
+    failures = []
+
+    # Separate empty strings (no need to translate) from actual content
+    items_to_translate = []
+    metadata_to_translate = (
+        []
+    )  # (row_idx, col_name, original_text, placeholders)
+
+    for row_idx, col_name, text in batch:
+        # Optimization: Skip API call for empty/whitespace strings
+        if not text.strip():
+            successes.append(
+                {
+                    "original_index": row_idx,
+                    "column": col_name,
+                    "translated_text": text,  # Return as is
+                }
+            )
+            continue
+
         modified, ph = replace_protected_words(text, protected_words)
-        processed_texts.append(modified)
-        placeholders_list.append(ph)
+        items_to_translate.append(modified)
+        metadata_to_translate.append((row_idx, col_name, text, ph))
 
+    if not items_to_translate:
+        return successes, failures
+
+    # Perform translation only on valid items
     translations = []
     for attempt in range(max_retries):
         try:
@@ -345,7 +373,7 @@ async def process_batch(
                 await rate_limiter.acquire()
 
             translations = await translator.translate(
-                processed_texts, src=source_lang, dest=target_lang
+                items_to_translate, src=source_lang, dest=target_lang
             )
             break
         except Exception as e:
@@ -353,13 +381,19 @@ async def process_batch(
                 sleep_time = (2**attempt) + random.uniform(0, 1)
                 await asyncio.sleep(sleep_time)
             else:
-                raise e
+                for r_idx, c_name, orig, _ in metadata_to_translate:
+                    failures.append(
+                        {
+                            "original_index": r_idx,
+                            "column": c_name,
+                            "original_text": orig,
+                            "error": str(e),
+                        }
+                    )
+                return successes, failures
 
-    successes = []
-    failures = []
-
-    for (row_idx, col_name, original_text), translation_obj, ph in zip(
-        batch, translations, placeholders_list
+    for (row_idx, col_name, original_text, ph), translation_obj in zip(
+        metadata_to_translate, translations
     ):
         if not translation_obj:
             failures.append(
@@ -374,16 +408,14 @@ async def process_batch(
 
         translated = restore_protected_words(translation_obj.text, ph)
 
-        if (
-            not translated.strip()
-            or translated.strip() == original_text.strip()
-        ):
+        if not translated.strip() and original_text.strip():
             failures.append(
                 {
                     "original_index": row_idx,
                     "column": col_name,
                     "original_text": original_text,
                     "translated_text": translated,
+                    "error": "Empty translation returned",
                 }
             )
         else:
@@ -436,7 +468,10 @@ async def process_stream(
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     semaphore = asyncio.Semaphore(max_concurrency)
     progress_desc = "Translating (Retry)" if is_retry_cycle else "Translating"
-    progress = tqdm(total=total_items, desc=progress_desc)
+
+    progress = tqdm(
+        total=total_items, desc=progress_desc, position=1, leave=False
+    )
 
     async def run_batch(batch_items):
         async with semaphore:
@@ -574,7 +609,7 @@ def generate_translation_tasks(
                     if (i, col) in skip_set:
                         continue
                     text = row.get(col)
-                    if isinstance(text, str) and text.strip():
+                    if isinstance(text, str):
                         yield (i, col, text)
             except Exception:
                 continue
@@ -585,7 +620,7 @@ def generate_translation_tasks(
                 if (i, col) in skip_set:
                     continue
                 text = row.get(col)
-                if isinstance(text, str) and text.strip():
+                if isinstance(text, str):
                     yield (i, col, text)
 
 
@@ -925,19 +960,24 @@ async def translate_dataset_file(
         print("No columns to translate.")
         return
 
-    run_dir = build_run_dir(save_dir, input_path.stem, source_lang, target_lang)
-    await orchestrate_translation(
-        dataset=df,
-        dataset_length=len(df),
-        save_dir=run_dir,
-        source_lang=source_lang,
-        target_lang=target_lang,
-        columns=selected_cols,
-        protected_words=protected_words,
-        file_format=file_format,
-        output_file_format=output_file_format,
-        **kwargs,
-    )
+    target_langs = normalize_target_langs(target_lang)
+    overall = tqdm(total=len(target_langs), desc="Overall Progress", position=0)
+    for lang in target_langs:
+        run_dir = build_run_dir(save_dir, input_path.stem, source_lang, lang)
+        await orchestrate_translation(
+            dataset=df,
+            dataset_length=len(df),
+            save_dir=run_dir,
+            source_lang=source_lang,
+            target_lang=lang,
+            columns=selected_cols,
+            protected_words=protected_words,
+            file_format=file_format,
+            output_file_format=output_file_format,
+            **kwargs,
+        )
+        overall.update(1)
+    overall.close()
 
 
 async def translate_dataset(
@@ -997,34 +1037,42 @@ async def translate_hf_dataset_entry(
 ):
     ensure_output_root(save_dir)
     dataset_label = dataset_name if not subset else f"{dataset_name}_{subset}"
-    run_dir = build_run_dir(save_dir, dataset_label, source_lang, target_lang)
     hf_cache = hf_cache_dir or resolve_hf_cache_dir(save_dir)
     datasets_dict = load_hf_splits(dataset_name, subset, splits, hf_cache)
 
-    for split_name, dataset in datasets_dict.items():
-        print(f"Processing split: {split_name}")
-        split_dir = run_dir / split_name
-        split_dir.mkdir(parents=True, exist_ok=True)
+    target_langs = normalize_target_langs(target_lang)
+    total_jobs = len(target_langs) * len(datasets_dict)
 
-        selected_cols = select_columns_from_hf(
-            dataset, columns, column_type_filters
-        )
-        if not selected_cols:
-            print(f"Skipping {split_name} (no matching columns)")
-            continue
+    overall = tqdm(total=total_jobs, desc="Overall Progress", position=0)
+    for lang in target_langs:
+        run_dir = build_run_dir(save_dir, dataset_label, source_lang, lang)
+        for split_name, dataset in datasets_dict.items():
+            print(f"Processing split: {split_name}")
+            split_dir = run_dir / split_name
+            split_dir.mkdir(parents=True, exist_ok=True)
 
-        await orchestrate_translation(
-            dataset=dataset,
-            dataset_length=len(dataset),
-            save_dir=split_dir,
-            source_lang=source_lang,
-            target_lang=target_lang,
-            columns=selected_cols,
-            protected_words=protected_words,
-            file_format="jsonl",
-            output_file_format=output_file_format,
-            **kwargs,
-        )
+            selected_cols = select_columns_from_hf(
+                dataset, columns, column_type_filters
+            )
+            if not selected_cols:
+                print(f"Skipping {split_name} (no matching columns)")
+                overall.update(1)
+                continue
+
+            await orchestrate_translation(
+                dataset=dataset,
+                dataset_length=len(dataset),
+                save_dir=split_dir,
+                source_lang=source_lang,
+                target_lang=lang,
+                columns=selected_cols,
+                protected_words=protected_words,
+                file_format="jsonl",
+                output_file_format=output_file_format,
+                **kwargs,
+            )
+            overall.update(1)
+    overall.close()
 
 
 app = typer.Typer()
