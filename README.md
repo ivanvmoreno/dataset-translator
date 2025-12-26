@@ -5,7 +5,7 @@
 ![License](https://img.shields.io/badge/license-MIT-blue)
 ![Tests](img/tests-badge.svg)
 
-A robust CLI tool for translating text columns in datasets using Google Translate, with support for protected words, retries, and checkpoint recovery. Works with both the unofficial Google Translate backend (free) and the Google Cloud Translation API.
+A robust CLI tool for translating text columns in datasets using pluggable translation providers, with support for protected words, retries, and checkpoint recovery. Ships with multiple providers (including the unofficial Google Translate backend and Google Cloud Translation API) and is designed to be extensible.
 
 > [!TIP]
 > Check the [prioritized backlog](https://github.com/users/ivanvmoreno/projects/1/views/3?system_template=iterative_development) for ideas to contribute, or to get an idea of what's coming next!
@@ -40,14 +40,16 @@ A robust CLI tool for translating text columns in datasets using Google Translat
   - Saves translated subsets as `<subset>-<lang>` and can merge them into a unified dataset.
 - **☁️ Hub Uploads**
   - Optionally push translated HF datasets to the Hugging Face Hub.
+- **⏱️ Rate Limiting**
+  - Limit requests per second and characters per second, token limiting available on LLM-based providers.
 - **🌐 Proxy Support**
   - Supports HTTP/HTTPS proxies for network requests.
 
 ## ✋ Important Notes and Limitations
 
 - This project is not affiliated with Google.
-- This project supports two backends: the unofficial web API via [py-googletrans](https://github.com/ssut/py-googletrans#how-does-this-library-work) and the official Google Cloud Translation API. The CLI is designed for feature parity across both.
-- To use Google Cloud Translation API, pass `--use-cloud-api` and ensure the Cloud Translation API is enabled for your project and credentials.
+- This project ships with several providers, including the unofficial web API via [py-googletrans](https://github.com/ssut/py-googletrans#how-does-this-library-work), the official Google Cloud Translation API, Alibaba Cloud Model Studio (Qwen-MT), and Yandex Cloud Translate.
+- To use Google Cloud Translation API, pass `--provider google_cloud` and ensure the Cloud Translation API is enabled for your project and credentials.
 - Maximum length per text is `15,000` characters for the unofficial Google Translate backend.
 - When using the unofficial backend, your IP may be at risk of being blocked by Google if you abuse the service. Use responsibly (or consider using a proxy; see `--proxy` option).
 
@@ -108,16 +110,23 @@ If `source_lang` is omitted, it defaults to auto-detection.
 | `--max-failure-cycles` | Number of full retry cycles for previously failed translations (default: `3`). |
 | `--only-failed` | Process only previously failed translations from the checkpoint directory (default: `False`). |
 | `--rate-limit` | Max translation requests per second (applied per batch). |
+| `--char-rate-limit` | Max translated characters per second (applied per batch). |
 | `--proxy` | HTTP/HTTPS proxy URL. Protocol must be specified. (e.g., `http://<proxy_host>:<proxy_port>`). |
-| `--use-cloud-api` | Use Google Cloud Translation API (auth via standard Google Cloud credentials). |
+| `--provider` | Translation provider name (e.g. `googletrans`, `google_cloud`) or a custom `module:Class`. |
+| `--provider-option` | Provider options in `key=value` format (repeatable). |
 | `--hf-cache-dir` | Shared Hugging Face cache directory (defaults to `<save_dir>/../hf_cache`). |
+| `--debug` | Print provider API errors and tracebacks to stderr. |
 | `--help` | Show help message and exit. |
+
+Provider notes:
+- Alibaba Cloud Model Studio (Qwen-MT): install with `pip install "dataset-translator[alibaba]"`, then pass `--provider alibaba` and set `DASHSCOPE_API_KEY` (or use `--provider-option api_key=...`). Optional options include `base_url` (default `https://dashscope-intl.aliyuncs.com/compatible-mode/v1`), `model` (default `qwen-mt-turbo`), `timeout`, and `tokens_per_minute` (or `tpm`).
+- Yandex Cloud Translate: pass `--provider yandex` and set `YANDEX_API_KEY` or `YANDEX_IAM_TOKEN` (or use `--provider-option api_key=...` / `--provider-option iam_token=...`). `folder_id` (or `YANDEX_FOLDER_ID`) is required. Optional options include `endpoint` and `timeout`. Ensure the identity has the `ai.translate.user` role for the folder.
 
 ### Hugging Face Datasets 🤗
 
 Translate datasets from the Hub by passing `--hf` and using the dataset name in place of the input path.
 
-Each translation run creates a new subset directory named `<subset>-<lang_code>` (or `<dataset_name>-<lang_code>` when no subset is provided) under `save_dir/<dataset_name>/`, saved as a Hugging Face dataset with translated splits.
+Each translation run creates a new subset directory named `<subset>-<lang_code>` (or `<dataset_name>-<lang_code>` when no subset is provided) under `save_dir/<dataset_name>/`, saved as a Hugging Face dataset with translated splits. The original dataset is also saved as a subset named after the source language code when provided, otherwise `original`.
 
 Downloads are cached locally in a shared sibling directory (`<save_dir>/../hf_cache`) and reused on resume.
 
@@ -126,6 +135,8 @@ Each translated subset includes a `translation_metadata.json` file with the conf
 Checkpoints for each split are stored under `checkpoints/<split>` within the subset directory.
 
 If `--merge-translated-subsets` is used, a unified dataset is written to `save_dir/<dataset_name>/merged/` containing the original splits plus `<split>-<lang>` translated splits.
+
+When pushing to the Hub without `{lang}` in the repo ID, each language (and the original subset) is stored as a separate config named by its language code (or `original` if auto-detection is used).
 
 When pushing merged datasets to the Hub, translated split names use underscores (`<split>_<lang>`) to satisfy Hub split naming rules.
 
@@ -151,7 +162,7 @@ Common HF options:
 
 ## Supported Languages
 
-Here is the list of languages supported by the Google Translate backends.
+Here is the list of languages supported by the Google Translate providers (other providers may differ).
 
 | Code     | Language                 |
 |----------|--------------------------|

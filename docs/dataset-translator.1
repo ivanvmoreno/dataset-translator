@@ -21,11 +21,12 @@ License
 .UE \c
 ] [IMAGE: Tests]
 .PP
-A robust CLI tool for translating text columns in datasets using Google
-Translate, with support for protected words, retries, and checkpoint
-recovery.
-Works with both the unofficial Google Translate backend (free) and the
-Google Cloud Translation API.
+A robust CLI tool for translating text columns in datasets using
+pluggable translation providers, with support for protected words,
+retries, and checkpoint recovery.
+Ships with multiple providers (including the unofficial Google Translate
+backend and Google Cloud Translation API) and is designed to be
+extensible.
 .RS
 .PP
 [!TIP] Check the \c
@@ -129,6 +130,13 @@ them into a unified dataset.
 Optionally push translated HF datasets to the Hugging Face Hub.
 .RE
 .IP \(bu 2
+\f[B]⏱️ Rate Limiting\f[R]
+.RS 2
+.IP \(bu 2
+Limit requests per second and characters per second, token limiting
+available on LLM\-based providers.
+.RE
+.IP \(bu 2
 \f[B]🌐 Proxy Support\f[R]
 .RS 2
 .IP \(bu 2
@@ -138,16 +146,17 @@ Supports HTTP/HTTPS proxies for network requests.
 .IP \(bu 2
 This project is not affiliated with Google.
 .IP \(bu 2
-This project supports two backends: the unofficial web API via \c
+This project ships with several providers, including the unofficial web
+API via \c
 .UR https://github.com/ssut/py-googletrans#how-does-this-library-work
 py\-googletrans
 .UE \c
-\ and the official Google Cloud Translation API.
-The CLI is designed for feature parity across both.
+, the official Google Cloud Translation API, Alibaba Cloud Model Studio
+(Qwen\-MT), and Yandex Cloud Translate.
 .IP \(bu 2
-To use Google Cloud Translation API, pass \f[CR]\-\-use\-cloud\-api\f[R]
-and ensure the Cloud Translation API is enabled for your project and
-credentials.
+To use Google Cloud Translation API, pass
+\f[CR]\-\-provider google_cloud\f[R] and ensure the Cloud Translation
+API is enabled for your project and credentials.
 .IP \(bu 2
 Maximum length per text is \f[CR]15,000\f[R] characters for the
 unofficial Google Translate backend.
@@ -289,6 +298,11 @@ T}@T{
 Max translation requests per second (applied per batch).
 T}
 T{
+\f[CR]\-\-char\-rate\-limit\f[R]
+T}@T{
+Max translated characters per second (applied per batch).
+T}
+T{
 \f[CR]\-\-proxy\f[R]
 T}@T{
 HTTP/HTTPS proxy URL.
@@ -296,10 +310,15 @@ Protocol must be specified.
 (e.g., \f[CR]http://<proxy_host>:<proxy_port>\f[R]).
 T}
 T{
-\f[CR]\-\-use\-cloud\-api\f[R]
+\f[CR]\-\-provider\f[R]
 T}@T{
-Use Google Cloud Translation API (auth via standard Google Cloud
-credentials).
+Translation provider name (e.g.\ \f[CR]googletrans\f[R],
+\f[CR]google_cloud\f[R]) or a custom \f[CR]module:Class\f[R].
+T}
+T{
+\f[CR]\-\-provider\-option\f[R]
+T}@T{
+Provider options in \f[CR]key=value\f[R] format (repeatable).
 T}
 T{
 \f[CR]\-\-hf\-cache\-dir\f[R]
@@ -308,11 +327,34 @@ Shared Hugging Face cache directory (defaults to
 \f[CR]<save_dir>/../hf_cache\f[R]).
 T}
 T{
+\f[CR]\-\-debug\f[R]
+T}@T{
+Print provider API errors and tracebacks to stderr.
+T}
+T{
 \f[CR]\-\-help\f[R]
 T}@T{
 Show help message and exit.
 T}
 .TE
+.PP
+Provider notes: \- Alibaba Cloud Model Studio (Qwen\-MT): install with
+\f[CR]pip install \(dqdataset\-translator[alibaba]\(dq\f[R], then pass
+\f[CR]\-\-provider alibaba\f[R] and set \f[CR]DASHSCOPE_API_KEY\f[R] (or
+use \f[CR]\-\-provider\-option api_key=...\f[R]).
+Optional options include \f[CR]base_url\f[R] (default
+\f[CR]https://dashscope\-intl.aliyuncs.com/compatible\-mode/v1\f[R]),
+\f[CR]model\f[R] (default \f[CR]qwen\-mt\-turbo\f[R]),
+\f[CR]timeout\f[R], and \f[CR]tokens_per_minute\f[R] (or
+\f[CR]tpm\f[R]).
+\- Yandex Cloud Translate: pass \f[CR]\-\-provider yandex\f[R] and set
+\f[CR]YANDEX_API_KEY\f[R] or \f[CR]YANDEX_IAM_TOKEN\f[R] (or use
+\f[CR]\-\-provider\-option api_key=...\f[R] /
+\f[CR]\-\-provider\-option iam_token=...\f[R]).
+\f[CR]folder_id\f[R] (or \f[CR]YANDEX_FOLDER_ID\f[R]) is required.
+Optional options include \f[CR]endpoint\f[R] and \f[CR]timeout\f[R].
+Ensure the identity has the \f[CR]ai.translate.user\f[R] role for the
+folder.
 .SS Hugging Face Datasets 🤗
 Translate datasets from the Hub by passing \f[CR]\-\-hf\f[R] and using
 the dataset name in place of the input path.
@@ -322,6 +364,8 @@ Each translation run creates a new subset directory named
 \f[CR]<dataset_name>\-<lang_code>\f[R] when no subset is provided) under
 \f[CR]save_dir/<dataset_name>/\f[R], saved as a Hugging Face dataset
 with translated splits.
+The original dataset is also saved as a subset named after the source
+language code when provided, otherwise \f[CR]original\f[R].
 .PP
 Downloads are cached locally in a shared sibling directory
 (\f[CR]<save_dir>/../hf_cache\f[R]) and reused on resume.
@@ -335,6 +379,11 @@ Checkpoints for each split are stored under
 If \f[CR]\-\-merge\-translated\-subsets\f[R] is used, a unified dataset
 is written to \f[CR]save_dir/<dataset_name>/merged/\f[R] containing the
 original splits plus \f[CR]<split>\-<lang>\f[R] translated splits.
+.PP
+When pushing to the Hub without \f[CR]{lang}\f[R] in the repo ID, each
+language (and the original subset) is stored as a separate config named
+by its language code (or \f[CR]original\f[R] if auto\-detection is
+used).
 .PP
 When pushing merged datasets to the Hub, translated split names use
 underscores (\f[CR]<split>_<lang>\f[R]) to satisfy Hub split naming
@@ -402,7 +451,7 @@ T}
 .TE
 .SS Supported Languages
 Here is the list of languages supported by the Google Translate
-backends.
+providers (other providers may differ).
 .PP
 .TS
 tab(@);
@@ -1109,9 +1158,3 @@ T}
 .UR https://github.com/ssut/py-googletrans/issues/408#issuecomment-2246262832
 Source
 .UE \c
-.SS Development
-.SS \f[CR]man\f[R] Page from \f[CR]README.md\f[R]
-.IP
-.EX
-pandoc \-s \-f markdown \-t man README.md \-V title=\(dqdataset\-translator\(dq \-V section=1 \-o docs/dataset\-translator.1
-.EE

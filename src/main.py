@@ -5,16 +5,16 @@ import itertools
 import importlib.metadata
 import random
 import re
+import sys
+import traceback
 import uuid
 from collections import defaultdict
 from pathlib import Path
-from dataclasses import dataclass
 from typing import (
     Dict,
     Iterable,
     List,
     Optional,
-    Protocol,
     Tuple,
     Set,
     Any,
@@ -23,57 +23,32 @@ from typing import (
 import jsonlines
 import pandas as pd
 import typer
-from google.api_core.client_options import ClientOptions
-from google.cloud import translate_v2 as translate_v2
-from googletrans import Translator
 from huggingface_hub import HfApi
 from datasets import Dataset, DatasetDict, DownloadMode, Sequence, Value
 from datasets import load_dataset as hf_load_dataset
 from tqdm.asyncio import tqdm
 
+from .providers import (
+    AsyncTranslator,
+    TranslationResult,
+    GoogleWebTranslate,
+    create_translator,
+    normalize_source_lang,
+    parse_provider_options,
+)
+from .rate_limiters import AsyncTokenBucketLimiter
 
-@dataclass
-class TranslationResult:
-    text: str
+Translator = GoogleWebTranslate
 
 
-class AsyncTranslator(Protocol):
-    async def translate(
-        self, texts: List[str], src: str, dest: str
-    ) -> List[TranslationResult]: ...
-
-
-class TokenBucket:
-    def __init__(self, rate: float) -> None:
-        if rate <= 0:
-            raise ValueError("rate must be > 0")
-        self._rate = rate
-        self._capacity = 1
-        self._tokens = 1.0
-        self._lock = asyncio.Lock()
-        self._last_ts: Optional[float] = None
-
-    async def acquire(self, tokens: int = 1) -> None:
-        if tokens <= 0:
-            raise ValueError("tokens must be > 0")
-        while True:
-            async with self._lock:
-                now = asyncio.get_running_loop().time()
-                if self._last_ts is None:
-                    self._last_ts = now
-                elapsed = now - self._last_ts
-                if elapsed > 0:
-                    self._tokens = min(
-                        self._capacity,
-                        self._tokens + (elapsed * self._rate),
-                    )
-                    self._last_ts = now
-                if self._tokens >= tokens:
-                    self._tokens -= tokens
-                    return
-                wait_for = (tokens - self._tokens) / self._rate
-
-            await asyncio.sleep(wait_for)
+def build_translator(
+    provider_name: str, provider_options: Dict[str, str]
+) -> AsyncTranslator:
+    if provider_name == "googletrans":
+        translator_factory = globals().get("Translator")
+        if callable(translator_factory):
+            return translator_factory(**provider_options)
+    return create_translator(provider_name, provider_options)
 
 
 VALID_COLUMN_TYPES = {"string", "list[string]"}
@@ -104,6 +79,20 @@ def write_translation_metadata(path: Path, metadata: Dict[str, Any]) -> None:
     )
 
 
+def log_debug(
+    debug: bool, message: str, exc: Optional[BaseException] = None
+) -> None:
+    if not debug:
+        return
+    if exc is None:
+        print(message, file=sys.stderr)
+        return
+    formatted = "".join(
+        traceback.format_exception(type(exc), exc, exc.__traceback__)
+    ).rstrip()
+    print(f"{message}\n{formatted}", file=sys.stderr)
+
+
 def read_translation_metadata(path: Path) -> Optional[Dict[str, Any]]:
     if not path.exists():
         return None
@@ -132,13 +121,15 @@ def normalize_hub_repo_id(repo_id: str) -> str:
     return f"{username}/{repo_id}"
 
 
-def upload_metadata_to_hub(repo_id: str, path: Path) -> None:
+def upload_metadata_to_hub(
+    repo_id: str, path: Path, path_in_repo: Optional[str] = None
+) -> None:
     if not path.exists():
         return
     api = HfApi()
     api.upload_file(
         path_or_fileobj=str(path),
-        path_in_repo=path.name,
+        path_in_repo=path_in_repo or path.name,
         repo_id=repo_id,
         repo_type="dataset",
     )
@@ -175,13 +166,6 @@ def normalize_target_langs(target_lang: str) -> List[str]:
         if cleaned:
             langs.append(cleaned)
     return langs or [target_lang]
-
-
-def normalize_source_lang(source_lang: Optional[str]) -> str:
-    if not source_lang:
-        return "auto"
-    cleaned = source_lang.strip()
-    return cleaned or "auto"
 
 
 def build_run_dir(
@@ -273,68 +257,6 @@ def save_dataset(df: pd.DataFrame, path: Path, file_format: str) -> None:
     raise ValueError(f"Unknown format {file_format}")
 
 
-class CloudTranslate:
-    """Async wrapper for Google Cloud Translate SDK."""
-
-    def __init__(self):
-        self.client = translate_v2.Client()
-
-    async def translate(
-        self, texts: List[str], src: str, dest: str
-    ) -> List[TranslationResult]:
-        return await asyncio.to_thread(self._translate_sync, texts, src, dest)
-
-    def _translate_sync(
-        self, texts: List[str], src: Optional[str], dest: str
-    ) -> List[TranslationResult]:
-        src_lang = normalize_source_lang(src)
-        request = {"target_language": dest, "format_": "text"}
-        if src_lang != "auto":
-            request["source_language"] = src_lang
-        results = self.client.translate(texts, **request)
-        if isinstance(texts, str):
-            results = [results]
-        return [
-            TranslationResult(item.get("translatedText", ""))
-            for item in results
-        ]
-
-
-class GoogleTranslate:
-    """Async wrapper for the synchronous googletrans library."""
-
-    def __init__(self, proxy: Optional[str] = None):
-        self.translator = Translator()
-        self.proxy = proxy
-
-    async def translate(
-        self, texts: List[str], src: str, dest: str
-    ) -> List[TranslationResult]:
-        if asyncio.iscoroutinefunction(self.translator.translate):
-            results = await self.translator.translate(texts, src=src, dest=dest)
-        else:
-            results = await asyncio.to_thread(
-                self._translate_sync, texts, src, dest
-            )
-
-        if not isinstance(results, list):
-            results = [results]
-
-        return [TranslationResult(r.text) for r in results]
-
-    def _translate_sync(self, texts: List[str], src: str, dest: str) -> Any:
-        src_lang = normalize_source_lang(src)
-        return self.translator.translate(texts, src=src_lang, dest=dest)
-
-
-def create_translator(
-    use_cloud_api: bool, proxy: Optional[str]
-) -> AsyncTranslator:
-    if use_cloud_api:
-        return CloudTranslate()
-    return GoogleTranslate(proxy=proxy)
-
-
 def is_file_path(path: str) -> bool:
     p = Path(path)
     return p.suffix != "" or (p.name != "" and "." in p.name)
@@ -414,7 +336,8 @@ def restore_protected_words(
 
 def batched(iterable, n):
     if hasattr(itertools, "batched"):
-        return itertools.batched(iterable, n)
+        yield from itertools.batched(iterable, n)
+        return
     it = iter(iterable)
     while True:
         batch = list(itertools.islice(it, n))
@@ -430,27 +353,24 @@ async def process_batch(
     target_lang: str,
     protected_words: List[str],
     max_retries: int,
-    rate_limiter: Optional[TokenBucket] = None,
+    rate_limiter: Optional[AsyncTokenBucketLimiter] = None,
+    char_rate_limiter: Optional[AsyncTokenBucketLimiter] = None,
+    debug: bool = False,
 ) -> Tuple[List[Dict], List[Dict]]:
     """Process a single batch of text."""
 
     successes = []
     failures = []
-
-    # Separate empty strings (no need to translate) from actual content
     items_to_translate = []
-    metadata_to_translate = (
-        []
-    )  # (row_idx, col_name, original_text, placeholders)
+    metadata_to_translate = []
 
     for row_idx, col_name, text in batch:
-        # Optimization: Skip API call for empty/whitespace strings
         if not text.strip():
             successes.append(
                 {
                     "original_index": row_idx,
                     "column": col_name,
-                    "translated_text": text,  # Return as is
+                    "translated_text": text,
                 }
             )
             continue
@@ -461,8 +381,11 @@ async def process_batch(
 
     if not items_to_translate:
         return successes, failures
+    if char_rate_limiter:
+        total_chars = sum(len(text) for text in items_to_translate)
+        if total_chars > 0:
+            await char_rate_limiter.acquire(total_chars)
 
-    # Perform translation only on valid items
     translations = []
     for attempt in range(max_retries):
         try:
@@ -474,6 +397,15 @@ async def process_batch(
             )
             break
         except Exception as e:
+            log_debug(
+                debug,
+                (
+                    "Provider error (attempt "
+                    f"{attempt + 1}/{max_retries}) in "
+                    f"{translator.__class__.__name__}"
+                ),
+                exc=e,
+            )
             if attempt < max_retries - 1:
                 sleep_time = (2**attempt) + random.uniform(0, 1)
                 await asyncio.sleep(sleep_time)
@@ -558,9 +490,11 @@ async def process_stream(
     max_concurrency: int,
     checkpoint_step: int,
     max_retries: int,
-    rate_limiter: Optional[TokenBucket],
+    rate_limiter: Optional[AsyncTokenBucketLimiter],
+    char_rate_limiter: Optional[AsyncTokenBucketLimiter],
     file_format: str,
     is_retry_cycle: bool = False,
+    debug: bool = False,
 ) -> List[Dict]:
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     semaphore = asyncio.Semaphore(max_concurrency)
@@ -581,9 +515,16 @@ async def process_stream(
                     protected_words,
                     max_retries,
                     rate_limiter,
+                    char_rate_limiter,
+                    debug=debug,
                 )
                 return s, f, len(batch_items)
             except Exception as e:
+                log_debug(
+                    debug,
+                    "Unexpected translation error in batch execution",
+                    exc=e,
+                )
                 f = [
                     {
                         "original_index": idx,
@@ -661,7 +602,9 @@ async def process_texts(
     checkpoint_step: int,
     max_retries: int,
     failure_retry_cycles: int = 0,
-    rate_limiter: Optional[TokenBucket] = None,
+    rate_limiter: Optional[AsyncTokenBucketLimiter] = None,
+    char_rate_limiter: Optional[AsyncTokenBucketLimiter] = None,
+    debug: bool = False,
 ) -> List[Dict]:
     ensure_output_root(save_dir)
     if target_lang is None:
@@ -690,7 +633,9 @@ async def process_texts(
         checkpoint_step=checkpoint_step,
         max_retries=max_retries,
         rate_limiter=rate_limiter,
+        char_rate_limiter=char_rate_limiter,
         file_format=file_format,
+        debug=debug,
     )
     if failures:
         final_fail_path = (
@@ -897,7 +842,8 @@ async def orchestrate_translation(
     file_format: str,
     output_file_format: str,
     translator: AsyncTranslator,
-    rate_limiter: Optional[TokenBucket],
+    rate_limiter: Optional[AsyncTokenBucketLimiter],
+    char_rate_limiter: Optional[AsyncTokenBucketLimiter],
     batch_size: int,
     max_concurrency: int,
     checkpoint_step: int,
@@ -905,6 +851,7 @@ async def orchestrate_translation(
     failure_retry_cycles: int,
     only_failed: bool,
     replace_columns: bool,
+    debug: bool = False,
     output_mode: str = "file",
     output_basename: str = "translated_dataset",
 ):
@@ -933,7 +880,9 @@ async def orchestrate_translation(
             checkpoint_step=checkpoint_step,
             max_retries=max_retries,
             rate_limiter=rate_limiter,
+            char_rate_limiter=char_rate_limiter,
             file_format=file_format,
+            debug=debug,
         )
     else:
         fail_path = (
@@ -980,8 +929,10 @@ async def orchestrate_translation(
             checkpoint_step=checkpoint_step,
             max_retries=max_retries,
             rate_limiter=rate_limiter,
+            char_rate_limiter=char_rate_limiter,
             file_format=file_format,
             is_retry_cycle=True,
+            debug=debug,
         )
 
         new_merged = merge_checkpoints(checkpoint_root, file_format)
@@ -1096,10 +1047,11 @@ async def translate_dataset_file(
     file_format: str,
     output_file_format: str,
     replace_columns: bool = False,
+    provider_name: Optional[str] = None,
+    provider_options: Optional[Dict[str, str]] = None,
     **kwargs,
 ):
     ensure_output_root(save_dir)
-    kwargs.pop("use_cloud_api", None)
     kwargs.pop("google_api_key", None)
     if file_format == "jsonl":
         with jsonlines.open(input_path, "r") as r:
@@ -1120,6 +1072,8 @@ async def translate_dataset_file(
     overall = tqdm(total=len(target_langs), desc="Overall Progress", position=0)
     translator = kwargs.get("translator")
     rate_limiter = kwargs.get("rate_limiter")
+    char_rate_limiter = kwargs.pop("char_rate_limiter", None)
+    char_rate_limiter = kwargs.get("char_rate_limiter")
     output_basename = "translated_dataset"
     for lang in target_langs:
         run_dir = build_run_dir(save_dir, input_path.stem, source_lang, lang)
@@ -1134,6 +1088,7 @@ async def translate_dataset_file(
             file_format=file_format,
             output_file_format=output_file_format,
             replace_columns=replace_columns,
+            char_rate_limiter=char_rate_limiter,
             **kwargs,
         )
         metadata = {
@@ -1146,11 +1101,18 @@ async def translate_dataset_file(
             "protected_words": protected_words,
             "file_format": file_format,
             "output_file_format": output_file_format,
+            "provider": provider_name,
+            "provider_options": provider_options or {},
             "translator": (
                 translator.__class__.__name__ if translator else None
             ),
             "rate_limit_per_sec": (
                 getattr(rate_limiter, "_rate", None) if rate_limiter else None
+            ),
+            "char_rate_limit_per_sec": (
+                getattr(char_rate_limiter, "_rate", None)
+                if char_rate_limiter
+                else None
             ),
             "translator_version": get_version(),
         }
@@ -1178,15 +1140,30 @@ async def translate_dataset(
         column_type_filters = ["string"]
 
     proxy = kwargs.pop("proxy", None)
-    use_cloud_api = kwargs.pop("use_cloud_api", False)
-    kwargs.pop("google_api_key", None)
+    provider_name = kwargs.pop("provider_name", "googletrans")
+    provider_options = kwargs.pop("provider_options", {})
+    if proxy and "proxy" not in provider_options:
+        provider_options["proxy"] = proxy
     rate_limit_per_sec = kwargs.pop("rate_limit_per_sec", None)
-    translator = kwargs.pop(
-        "translator", create_translator(use_cloud_api, proxy)
-    )
+    char_rate_limit_per_sec = kwargs.pop("char_rate_limit_per_sec", None)
+    translator = kwargs.pop("translator", None)
+    if translator is None:
+        translator = build_translator(provider_name, provider_options)
     rate_limiter = kwargs.pop(
         "rate_limiter",
-        TokenBucket(rate_limit_per_sec) if rate_limit_per_sec else None,
+        (
+            AsyncTokenBucketLimiter(rate_limit_per_sec, capacity=1)
+            if rate_limit_per_sec
+            else None
+        ),
+    )
+    char_rate_limiter = kwargs.pop(
+        "char_rate_limiter",
+        (
+            AsyncTokenBucketLimiter(char_rate_limit_per_sec)
+            if char_rate_limit_per_sec
+            else None
+        ),
     )
     await translate_dataset_file(
         input_path=input_path,
@@ -1199,8 +1176,11 @@ async def translate_dataset(
         file_format=file_format,
         output_file_format=output_file_format,
         replace_columns=replace_columns,
+        provider_name=provider_name,
+        provider_options=provider_options,
         translator=translator,
         rate_limiter=rate_limiter,
+        char_rate_limiter=char_rate_limiter,
         **kwargs,
     )
 
@@ -1224,9 +1204,11 @@ async def translate_hf_dataset_entry(
     **kwargs,
 ):
     ensure_output_root(save_dir)
-    use_cloud_api = kwargs.pop("use_cloud_api", False)
+    provider_name = kwargs.pop("provider_name", None)
+    provider_options = kwargs.pop("provider_options", None)
     translator = kwargs.get("translator")
     rate_limiter = kwargs.get("rate_limiter")
+    char_rate_limiter = kwargs.pop("char_rate_limiter", None)
     hf_cache = hf_cache_dir or resolve_hf_cache_dir(save_dir)
     datasets_dict = load_hf_splits(dataset_name, subset, splits, hf_cache)
 
@@ -1240,10 +1222,62 @@ async def translate_hf_dataset_entry(
     merged_sources: List[Tuple[str, Path]] = []
     if push_to_hub and not merge_translated_subsets:
         if len(target_langs) > 1 and "{lang}" not in push_to_hub:
-            raise ValueError(
-                "When pushing multiple target languages without "
-                "`--merge-translated-subsets`, include `{lang}` in "
-                "`--push-to-hub` (e.g. `myuser/ds-{lang}`)."
+            print(
+                "Pushing multiple target languages to a single repo; "
+                "each language will be stored as a separate config."
+            )
+    original_label = (
+        source_lang if source_lang and source_lang != "auto" else "original"
+    )
+    original_subset = sanitize_run_label(original_label)
+    original_dir = dataset_root / original_subset
+    original_dir.mkdir(parents=True, exist_ok=True)
+    original_meta_path = original_dir / "translation_metadata.json"
+    existing_original_meta = read_translation_metadata(original_meta_path)
+    existing_original_dataset = (original_dir / "dataset_dict.json").exists()
+    if not (
+        existing_original_meta
+        and existing_original_dataset
+        and existing_original_meta.get("dataset_name") == dataset_name
+        and existing_original_meta.get("subset") == subset
+        and existing_original_meta.get("source_lang") == (source_lang or "auto")
+        and existing_original_meta.get("is_original") is True
+    ):
+        original_dict = DatasetDict(datasets_dict)
+        original_dict.save_to_disk(original_dir)
+        original_meta = {
+            "dataset_name": dataset_name,
+            "subset": subset,
+            "translated_subset": original_label,
+            "source_lang": source_lang or "auto",
+            "target_lang": None,
+            "splits": sorted(datasets_dict.keys()),
+            "is_original": True,
+            "provider": provider_name,
+            "provider_options": provider_options or {},
+            "translator": (
+                translator.__class__.__name__ if translator else None
+            ),
+            "char_rate_limit_per_sec": (
+                getattr(char_rate_limiter, "_rate", None)
+                if char_rate_limiter
+                else None
+            ),
+            "translator_version": get_version() or "development",
+        }
+        write_translation_metadata(original_meta_path, original_meta)
+        if push_to_hub:
+            repo_id = push_to_hub.replace("{lang}", original_label)
+            repo_id = ensure_hub_repo(repo_id, hub_private)
+            original_dict.push_to_hub(
+                repo_id,
+                private=hub_private,
+                config_name=original_subset,
+            )
+            upload_metadata_to_hub(
+                repo_id,
+                original_meta_path,
+                path_in_repo=(f"translation_metadata_{original_subset}.json"),
             )
     for lang in target_langs:
         translated_subset = f"{subset_label}-{lang}"
@@ -1293,6 +1327,7 @@ async def translate_hf_dataset_entry(
                 output_file_format=output_file_format,
                 replace_columns=replace_columns,
                 output_mode="hf_dataset",
+                char_rate_limiter=char_rate_limiter,
                 **kwargs,
             )
             if translated_dataset is not None:
@@ -1312,8 +1347,15 @@ async def translate_hf_dataset_entry(
                 "columns": columns,
                 "column_type_filters": column_type_filters,
                 "protected_words": protected_words,
+                "provider": provider_name,
+                "provider_options": provider_options or {},
                 "translator": (
                     translator.__class__.__name__ if translator else None
+                ),
+                "char_rate_limit_per_sec": (
+                    getattr(char_rate_limiter, "_rate", None)
+                    if char_rate_limiter
+                    else None
                 ),
                 "translator_version": get_version() or "development",
             }
@@ -1323,9 +1365,18 @@ async def translate_hf_dataset_entry(
             if push_to_hub:
                 repo_id = push_to_hub.replace("{lang}", lang)
                 repo_id = ensure_hub_repo(repo_id, hub_private)
-                translated_dict.push_to_hub(repo_id, private=hub_private)
+                hub_config_name = sanitize_run_label(lang)
+                translated_dict.push_to_hub(
+                    repo_id,
+                    private=hub_private,
+                    config_name=hub_config_name,
+                )
                 upload_metadata_to_hub(
-                    repo_id, subset_dir / "translation_metadata.json"
+                    repo_id,
+                    subset_dir / "translation_metadata.json",
+                    path_in_repo=(
+                        f"translation_metadata_{hub_config_name}.json"
+                    ),
                 )
     overall.close()
 
@@ -1354,10 +1405,15 @@ async def translate_hf_dataset_entry(
                     repo_id = ensure_hub_repo(push_to_hub, hub_private)
                     merged_dict = DatasetDict.load_from_disk(merged_dir)
                     hub_dict = rename_splits_for_hub(merged_dict)
-                    hub_dict.push_to_hub(repo_id, private=hub_private)
+                    hub_dict.push_to_hub(
+                        repo_id,
+                        private=hub_private,
+                        config_name="merged",
+                    )
                     upload_metadata_to_hub(
                         repo_id,
                         merged_dir / "translation_metadata.json",
+                        path_in_repo="translation_metadata_merged.json",
                     )
                 return
         for split_name, dataset in datasets_dict.items():
@@ -1389,9 +1445,15 @@ async def translate_hf_dataset_entry(
                 )
             repo_id = ensure_hub_repo(push_to_hub, hub_private)
             hub_dict = rename_splits_for_hub(merged_dict)
-            hub_dict.push_to_hub(repo_id, private=hub_private)
+            hub_dict.push_to_hub(
+                repo_id,
+                private=hub_private,
+                config_name="merged",
+            )
             upload_metadata_to_hub(
-                repo_id, merged_dir / "translation_metadata.json"
+                repo_id,
+                merged_dir / "translation_metadata.json",
+                path_in_repo="translation_metadata_merged.json",
             )
 
 
@@ -1443,10 +1505,23 @@ def main(
     failure_retry_cycles: int = typer.Option(3, "--max-failure-cycles"),
     only_failed: bool = typer.Option(False, "--only-failed"),
     proxy: Optional[str] = typer.Option(None, "--proxy"),
-    use_cloud_api: bool = typer.Option(
-        False, "--use-cloud-api", help="Use Google Cloud Translate API"
+    provider: str = typer.Option(
+        "googletrans",
+        "--provider",
+        help="Translation provider name (or module:Class for custom).",
+    ),
+    provider_option: Optional[List[str]] = typer.Option(
+        None,
+        "--provider-option",
+        "-P",
+        help="Provider option in key=value format (repeatable).",
     ),
     rate_limit_per_sec: Optional[float] = typer.Option(None, "--rate-limit"),
+    char_rate_limit_per_sec: Optional[float] = typer.Option(
+        None,
+        "--char-rate-limit",
+        help="Limit translation throughput by characters per second.",
+    ),
     hf_dataset: bool = typer.Option(
         False, "--hf", help="Treat input_path as Hugging Face dataset name"
     ),
@@ -1473,6 +1548,11 @@ def main(
         "--hub-private",
         help="Create/push the Hub repo as private (HF only).",
     ),
+    debug: bool = typer.Option(
+        False,
+        "--debug",
+        help="Print provider API errors and tracebacks to stderr.",
+    ),
 ):
     ensure_output_root(save_dir)
     protected = load_protected_words(protected_words)
@@ -1497,9 +1577,19 @@ def main(
                 "`dataset-translator <input> <out> en es,fr`)."
             )
 
-    translator = create_translator(use_cloud_api, proxy)
+    provider_options = parse_provider_options(provider_option)
+    if proxy and "proxy" not in provider_options:
+        provider_options["proxy"] = proxy
+    translator = build_translator(provider, provider_options)
     rate_limiter = (
-        TokenBucket(rate_limit_per_sec) if rate_limit_per_sec else None
+        AsyncTokenBucketLimiter(rate_limit_per_sec, capacity=1)
+        if rate_limit_per_sec
+        else None
+    )
+    char_rate_limiter = (
+        AsyncTokenBucketLimiter(char_rate_limit_per_sec)
+        if char_rate_limit_per_sec
+        else None
     )
 
     common_kwargs = {
@@ -1510,14 +1600,17 @@ def main(
         "protected_words": protected,
         "translator": translator,
         "rate_limiter": rate_limiter,
+        "char_rate_limiter": char_rate_limiter,
         "replace_columns": replace_columns,
-        "use_cloud_api": use_cloud_api,
+        "provider_name": provider,
+        "provider_options": provider_options,
         "batch_size": batch_size,
         "max_concurrency": max_concurrency,
         "checkpoint_step": checkpoint_step,
         "max_retries": max_retries,
         "failure_retry_cycles": failure_retry_cycles,
         "only_failed": only_failed,
+        "debug": debug,
     }
 
     if hf_dataset:

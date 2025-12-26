@@ -15,18 +15,15 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
 ]
-dependencies = [
-    "datasets",
-    "google-cloud-translate>=3.23.0",
-    "googletrans",
-    "jsonlines>=4.0.0",
-    "pandas",
-    "pyarrow",
-    "tqdm",
-    "typer",
-]
+dependencies = ["jsonlines>=4.0.0", "pandas", "pyarrow", "tqdm", "typer"]
 keywords = ["dataset", "translate", "hf", "google", "api"]
 license = { text = "MIT" }
+
+[project.optional-dependencies]
+hf = ["datasets"]
+alibaba = ["litellm"]
+google_cloud = ["google-cloud-translate>=3.23.0"]
+google_trans = ["googletrans"]
 
 [project.urls]
 Repository = "https://github.com/ivanvmoreno/dataset-translator"
