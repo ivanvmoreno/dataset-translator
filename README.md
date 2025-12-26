@@ -115,11 +115,18 @@ If `source_lang` is omitted, it defaults to auto-detection.
 
 ### Hugging Face Datasets 🤗
 
-Translate datasets from the Hub by passing `--hf` and using the dataset name in place of the input path. Each translation run creates a new subset directory named `<subset>-<lang_code>` (or `<dataset_name>-<lang_code>` when no subset is provided) under `save_dir/<dataset_name>/`, saved as a Hugging Face dataset with translated splits.
+Translate datasets from the Hub by passing `--hf` and using the dataset name in place of the input path.
+
+Each translation run creates a new subset directory named `<subset>-<lang_code>` (or `<dataset_name>-<lang_code>` when no subset is provided) under `save_dir/<dataset_name>/`, saved as a Hugging Face dataset with translated splits.
+
 Downloads are cached locally in a shared sibling directory (`<save_dir>/../hf_cache`) and reused on resume.
+
 Each translated subset includes a `translation_metadata.json` file with the configuration used for reproducibility.
+
 Checkpoints for each split are stored under `checkpoints/<split>` within the subset directory.
+
 If `--merge-translated-subsets` is used, a unified dataset is written to `save_dir/<dataset_name>/merged/` containing the original splits plus `<split>-<lang>` translated splits.
+
 When pushing merged datasets to the Hub, translated split names use underscores (`<split>_<lang>`) to satisfy Hub split naming rules.
 
 ```bash
