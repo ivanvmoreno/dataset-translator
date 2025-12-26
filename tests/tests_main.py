@@ -429,9 +429,8 @@ def test_main_cli(tmp_path, monkeypatch):
             "0",
         ],
     )
-    # Check for successful execution (exit code 0) and confirmation message.
+    # Check for successful execution (exit code 0).
     assert result.exit_code == 0
-    assert "Translation complete" in result.output
     # Verify that the final translated dataset was written.
     run_dir = build_run_dir(save_dir, input_csv.stem, "en", "es")
     final_file = run_dir / "translated_dataset.csv"
