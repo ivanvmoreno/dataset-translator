@@ -1,6 +1,8 @@
 #!/usr/bin/env python
 import asyncio
+import json
 import itertools
+import importlib.metadata
 import random
 import re
 import uuid
@@ -24,6 +26,7 @@ import typer
 from google.api_core.client_options import ClientOptions
 from google.cloud import translate_v2 as translate_v2
 from googletrans import Translator
+from huggingface_hub import HfApi
 from datasets import Dataset, DatasetDict, DownloadMode, Sequence, Value
 from datasets import load_dataset as hf_load_dataset
 from tqdm.asyncio import tqdm
@@ -77,6 +80,13 @@ VALID_COLUMN_TYPES = {"string", "list[string]"}
 OUTPUT_FILE_EXTENSIONS = {".csv", ".parquet", ".jsonl"}
 
 
+def get_version() -> Optional[str]:
+    try:
+        return importlib.metadata.version("dataset-translator")
+    except ImportError:
+        return None
+
+
 def ensure_output_root(save_dir: Path) -> None:
     if save_dir.exists() and not save_dir.is_dir():
         raise ValueError(f"Output path must be a directory: {save_dir}")
@@ -85,6 +95,72 @@ def ensure_output_root(save_dir: Path) -> None:
             f"Output path must be a directory, not a file: {save_dir}"
         )
     save_dir.mkdir(parents=True, exist_ok=True)
+
+
+def write_translation_metadata(path: Path, metadata: Dict[str, Any]) -> None:
+    path.write_text(
+        json.dumps(metadata, indent=2, ensure_ascii=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def read_translation_metadata(path: Path) -> Optional[Dict[str, Any]]:
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def normalize_hub_repo_id(repo_id: str) -> str:
+    if "/" in repo_id:
+        return repo_id
+    api = HfApi()
+    try:
+        who = api.whoami()
+    except Exception as exc:
+        raise ValueError(
+            "Hub upload requires authentication or a fully qualified "
+            "repo id like `user/repo`."
+        ) from exc
+    username = who.get("name")
+    if not username:
+        raise ValueError(
+            "Unable to resolve Hub username; pass `user/repo` explicitly."
+        )
+    return f"{username}/{repo_id}"
+
+
+def upload_metadata_to_hub(repo_id: str, path: Path) -> None:
+    if not path.exists():
+        return
+    api = HfApi()
+    api.upload_file(
+        path_or_fileobj=str(path),
+        path_in_repo=path.name,
+        repo_id=repo_id,
+        repo_type="dataset",
+    )
+
+
+def ensure_hub_repo(repo_id: str, private: bool) -> str:
+    normalized = normalize_hub_repo_id(repo_id)
+    api = HfApi()
+    api.create_repo(
+        repo_id=normalized,
+        repo_type="dataset",
+        private=private,
+        exist_ok=True,
+    )
+    return normalized
+
+
+def rename_splits_for_hub(dataset_dict: DatasetDict) -> DatasetDict:
+    renamed = {}
+    for split_name, dataset in dataset_dict.items():
+        renamed[split_name.replace("-", "_")] = dataset
+    return DatasetDict(renamed)
 
 
 def sanitize_run_label(label: str) -> str:
@@ -197,7 +273,7 @@ def save_dataset(df: pd.DataFrame, path: Path, file_format: str) -> None:
     raise ValueError(f"Unknown format {file_format}")
 
 
-class CloudTranslator:
+class CloudTranslate:
     """Async wrapper for Google Cloud Translate SDK."""
 
     def __init__(self):
@@ -224,7 +300,7 @@ class CloudTranslator:
         ]
 
 
-class FallbackAsyncTranslator:
+class GoogleTranslate:
     """Async wrapper for the synchronous googletrans library."""
 
     def __init__(self, proxy: Optional[str] = None):
@@ -255,8 +331,8 @@ def create_translator(
     use_cloud_api: bool, proxy: Optional[str]
 ) -> AsyncTranslator:
     if use_cloud_api:
-        return CloudTranslator()
-    return FallbackAsyncTranslator(proxy=proxy)
+        return CloudTranslate()
+    return GoogleTranslate(proxy=proxy)
 
 
 def is_file_path(path: str) -> bool:
@@ -726,6 +802,33 @@ def select_columns_from_hf(
     return filtered
 
 
+def apply_translations_to_hf_dataset(
+    dataset: Dataset,
+    final_merged: Dict[int, Dict[str, str]],
+    columns: List[str],
+    replace_columns: bool,
+) -> Dataset:
+    def apply_record(record: Dict[str, Any], idx: int) -> Dict[str, Any]:
+        merged = final_merged.get(idx)
+        if replace_columns:
+            if merged:
+                for col in columns:
+                    if col in merged:
+                        record[col] = merged[col]
+            return record
+
+        updates = {}
+        for col in columns:
+            updates[f"translated_{col}"] = merged.get(col) if merged else None
+        return {**record, **updates}
+
+    return dataset.map(
+        apply_record,
+        with_indices=True,
+        load_from_cache_file=False,
+    )
+
+
 def load_hf_splits(
     dataset_name: str,
     subset: Optional[str],
@@ -802,6 +905,8 @@ async def orchestrate_translation(
     failure_retry_cycles: int,
     only_failed: bool,
     replace_columns: bool,
+    output_mode: str = "file",
+    output_basename: str = "translated_dataset",
 ):
     checkpoint_root, checkpoint_batches_dir, checkpoint_failures_dir = (
         prepare_checkpoint_dirs(save_dir)
@@ -899,7 +1004,14 @@ async def orchestrate_translation(
 
     print("Merging translations into final dataset...")
     final_merged = merge_checkpoints(checkpoint_root, file_format)
-    output_path = save_dir / f"translated_dataset.{output_file_format}"
+    if output_mode != "file":
+        if isinstance(dataset, Dataset):
+            return apply_translations_to_hf_dataset(
+                dataset, final_merged, columns, replace_columns
+            )
+        return None
+
+    output_path = save_dir / f"{output_basename}.{output_file_format}"
 
     if output_file_format == "jsonl":
         writer = jsonlines.open(output_path, "w")
@@ -987,6 +1099,8 @@ async def translate_dataset_file(
     **kwargs,
 ):
     ensure_output_root(save_dir)
+    kwargs.pop("use_cloud_api", None)
+    kwargs.pop("google_api_key", None)
     if file_format == "jsonl":
         with jsonlines.open(input_path, "r") as r:
             df = pd.DataFrame(list(r))
@@ -1004,6 +1118,9 @@ async def translate_dataset_file(
 
     target_langs = normalize_target_langs(target_lang)
     overall = tqdm(total=len(target_langs), desc="Overall Progress", position=0)
+    translator = kwargs.get("translator")
+    rate_limiter = kwargs.get("rate_limiter")
+    output_basename = "translated_dataset"
     for lang in target_langs:
         run_dir = build_run_dir(save_dir, input_path.stem, source_lang, lang)
         await orchestrate_translation(
@@ -1018,6 +1135,27 @@ async def translate_dataset_file(
             output_file_format=output_file_format,
             replace_columns=replace_columns,
             **kwargs,
+        )
+        metadata = {
+            "input_path": str(input_path),
+            "output_basename": output_basename,
+            "source_lang": source_lang,
+            "target_lang": lang,
+            "columns": selected_cols,
+            "column_type_filters": column_type_filters,
+            "protected_words": protected_words,
+            "file_format": file_format,
+            "output_file_format": output_file_format,
+            "translator": (
+                translator.__class__.__name__ if translator else None
+            ),
+            "rate_limit_per_sec": (
+                getattr(rate_limiter, "_rate", None) if rate_limiter else None
+            ),
+            "translator_version": get_version(),
+        }
+        write_translation_metadata(
+            run_dir / "translation_metadata.json", metadata
         )
         overall.update(1)
     overall.close()
@@ -1080,11 +1218,15 @@ async def translate_hf_dataset_entry(
     splits: Optional[List[str]],
     hf_cache_dir: Optional[Path],
     replace_columns: bool = False,
+    merge_translated_subsets: bool = False,
+    push_to_hub: Optional[str] = None,
+    hub_private: bool = False,
     **kwargs,
 ):
     ensure_output_root(save_dir)
-    kwargs.pop("use_cloud_api", None)
-    dataset_label = dataset_name if not subset else f"{dataset_name}_{subset}"
+    use_cloud_api = kwargs.pop("use_cloud_api", False)
+    translator = kwargs.get("translator")
+    rate_limiter = kwargs.get("rate_limiter")
     hf_cache = hf_cache_dir or resolve_hf_cache_dir(save_dir)
     datasets_dict = load_hf_splits(dataset_name, subset, splits, hf_cache)
 
@@ -1092,11 +1234,43 @@ async def translate_hf_dataset_entry(
     total_jobs = len(target_langs) * len(datasets_dict)
 
     overall = tqdm(total=total_jobs, desc="Overall Progress", position=0)
+    dataset_root = save_dir / sanitize_run_label(dataset_name)
+    dataset_root.mkdir(parents=True, exist_ok=True)
+    subset_label = subset or sanitize_run_label(dataset_name)
+    merged_sources: List[Tuple[str, Path]] = []
+    if push_to_hub and not merge_translated_subsets:
+        if len(target_langs) > 1 and "{lang}" not in push_to_hub:
+            raise ValueError(
+                "When pushing multiple target languages without "
+                "`--merge-translated-subsets`, include `{lang}` in "
+                "`--push-to-hub` (e.g. `myuser/ds-{lang}`)."
+            )
     for lang in target_langs:
-        run_dir = build_run_dir(save_dir, dataset_label, source_lang, lang)
+        translated_subset = f"{subset_label}-{lang}"
+        subset_dir = dataset_root / sanitize_run_label(translated_subset)
+        subset_dir.mkdir(parents=True, exist_ok=True)
+        merged_sources.append((lang, subset_dir))
+        existing_meta = read_translation_metadata(
+            subset_dir / "translation_metadata.json"
+        )
+        existing_dataset = (subset_dir / "dataset_dict.json").exists()
+        if existing_meta and existing_dataset:
+            if (
+                existing_meta.get("dataset_name") == dataset_name
+                and existing_meta.get("subset") == subset
+                and existing_meta.get("source_lang") == source_lang
+                and existing_meta.get("target_lang") == lang
+                and existing_meta.get("columns") == columns
+                and existing_meta.get("column_type_filters")
+                == column_type_filters
+                and existing_meta.get("replace_columns") == replace_columns
+            ):
+                overall.update(len(datasets_dict))
+                continue
+        translated_splits: Dict[str, Dataset] = {}
         for split_name, dataset in datasets_dict.items():
             print(f"Processing split: {split_name}")
-            split_dir = run_dir / split_name
+            split_dir = subset_dir / "checkpoints" / split_name
             split_dir.mkdir(parents=True, exist_ok=True)
 
             selected_cols = select_columns_from_hf(
@@ -1107,7 +1281,7 @@ async def translate_hf_dataset_entry(
                 overall.update(1)
                 continue
 
-            await orchestrate_translation(
+            translated_dataset = await orchestrate_translation(
                 dataset=dataset,
                 dataset_length=len(dataset),
                 save_dir=split_dir,
@@ -1118,10 +1292,107 @@ async def translate_hf_dataset_entry(
                 file_format="jsonl",
                 output_file_format=output_file_format,
                 replace_columns=replace_columns,
+                output_mode="hf_dataset",
                 **kwargs,
             )
+            if translated_dataset is not None:
+                translated_splits[split_name] = translated_dataset
             overall.update(1)
+
+        if translated_splits:
+            translated_dict = DatasetDict(translated_splits)
+            translated_dict.save_to_disk(subset_dir)
+            metadata = {
+                "dataset_name": dataset_name,
+                "subset": subset,
+                "translated_subset": translated_subset,
+                "source_lang": source_lang or "auto",
+                "target_lang": lang,
+                "splits": sorted(translated_splits.keys()),
+                "columns": columns,
+                "column_type_filters": column_type_filters,
+                "protected_words": protected_words,
+                "translator": (
+                    translator.__class__.__name__ if translator else None
+                ),
+                "translator_version": get_version() or "development",
+            }
+            write_translation_metadata(
+                subset_dir / "translation_metadata.json", metadata
+            )
+            if push_to_hub:
+                repo_id = push_to_hub.replace("{lang}", lang)
+                repo_id = ensure_hub_repo(repo_id, hub_private)
+                translated_dict.push_to_hub(repo_id, private=hub_private)
+                upload_metadata_to_hub(
+                    repo_id, subset_dir / "translation_metadata.json"
+                )
     overall.close()
+
+    if merge_translated_subsets and merged_sources:
+        merged_splits: Dict[str, Dataset] = {}
+        merged_dir = dataset_root / "merged"
+        merged_meta = read_translation_metadata(
+            merged_dir / "translation_metadata.json"
+        )
+        if merged_meta:
+            if (
+                merged_meta.get("dataset_name") == dataset_name
+                and merged_meta.get("subset") == subset
+                and merged_meta.get("split_naming") == "<split>-<lang>"
+                and set(merged_meta.get("languages", [])) == set(target_langs)
+                and merged_meta.get("include_original") is True
+                and set(merged_meta.get("original_splits", []))
+                == set(datasets_dict.keys())
+            ):
+                if push_to_hub:
+                    if "{lang}" in push_to_hub:
+                        raise ValueError(
+                            "Remove `{lang}` from `--push-to-hub` when using "
+                            "`--merge-translated-subsets`."
+                        )
+                    repo_id = ensure_hub_repo(push_to_hub, hub_private)
+                    merged_dict = DatasetDict.load_from_disk(merged_dir)
+                    hub_dict = rename_splits_for_hub(merged_dict)
+                    hub_dict.push_to_hub(repo_id, private=hub_private)
+                    upload_metadata_to_hub(
+                        repo_id,
+                        merged_dir / "translation_metadata.json",
+                    )
+                return
+        for split_name, dataset in datasets_dict.items():
+            merged_splits[split_name] = dataset
+        for lang, subset_dir in merged_sources:
+            loaded = DatasetDict.load_from_disk(subset_dir)
+            for split_name, dataset in loaded.items():
+                merged_splits[f"{split_name}-{lang}"] = dataset
+        merged_dict = DatasetDict(merged_splits)
+        merged_dict.save_to_disk(merged_dir)
+        merge_metadata = {
+            "dataset_name": dataset_name,
+            "subset": subset,
+            "merged_dir": str(merged_dir),
+            "split_naming": "<split>-<lang>",
+            "languages": target_langs,
+            "include_original": True,
+            "original_splits": sorted(datasets_dict.keys()),
+            "source_subsets": [str(path) for _, path in merged_sources],
+        }
+        write_translation_metadata(
+            merged_dir / "translation_metadata.json", merge_metadata
+        )
+        if push_to_hub:
+            if "{lang}" in push_to_hub:
+                raise ValueError(
+                    "Remove `{lang}` from `--push-to-hub` when using "
+                    "`--merge-translated-subsets`."
+                )
+            repo_id = ensure_hub_repo(push_to_hub, hub_private)
+            hub_dict = rename_splits_for_hub(merged_dict)
+            hub_dict.push_to_hub(repo_id, private=hub_private)
+            upload_metadata_to_hub(
+                repo_id, merged_dir / "translation_metadata.json"
+            )
 
 
 app = typer.Typer()
@@ -1184,6 +1455,24 @@ def main(
     hf_cache_dir: Optional[Path] = typer.Option(
         None, "--hf-cache-dir", help="Shared HF cache directory"
     ),
+    merge_translated_subsets: bool = typer.Option(
+        False,
+        "--merge-translated-subsets",
+        help="Merge per-language HF subsets into a single dataset root",
+    ),
+    push_to_hub: Optional[str] = typer.Option(
+        None,
+        "--push-to-hub",
+        help=(
+            "Push translated HF dataset(s) to the Hub. Use `{lang}` in the "
+            "repo ID for per-language outputs."
+        ),
+    ),
+    hub_private: bool = typer.Option(
+        False,
+        "--hub-private",
+        help="Create/push the Hub repo as private (HF only).",
+    ),
 ):
     ensure_output_root(save_dir)
     protected = load_protected_words(protected_words)
@@ -1194,6 +1483,19 @@ def main(
         if column_types
         else ["string"] if not columns else None
     )
+    if target_lang is None:
+        if source_lang and "," in source_lang:
+            print(
+                "No target_lang provided; treating source_lang as "
+                "comma-separated targets and using auto-detect for source."
+            )
+            target_lang = source_lang
+            source_lang = None
+        else:
+            raise ValueError(
+                "target_lang is required (e.g. "
+                "`dataset-translator <input> <out> en es,fr`)."
+            )
 
     translator = create_translator(use_cloud_api, proxy)
     rate_limiter = (
@@ -1229,6 +1531,9 @@ def main(
                 subset=subset,
                 splits=splits,
                 hf_cache_dir=hf_cache_dir,
+                merge_translated_subsets=merge_translated_subsets,
+                push_to_hub=push_to_hub,
+                hub_private=hub_private,
                 **common_kwargs,
             )
         )

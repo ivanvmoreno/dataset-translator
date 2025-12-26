@@ -5,7 +5,7 @@
 ![License](https://img.shields.io/badge/license-MIT-blue)
 ![Tests](img/tests-badge.svg)
 
-A robust CLI tool for translating text columns in datasets using Google Translate, with support for protected words, retries, and checkpoint recovery.
+A robust CLI tool for translating text columns in datasets using Google Translate, with support for protected words, retries, and checkpoint recovery. Works with both the unofficial Google Translate backend (free) and the Google Cloud Translation API.
 
 > [!TIP]
 > Check the [prioritized backlog](https://github.com/users/ivanvmoreno/projects/1/views/3?system_template=iterative_development) for ideas to contribute, or to get an idea of what's coming next!
@@ -34,16 +34,22 @@ A robust CLI tool for translating text columns in datasets using Google Translat
   - Filter by column types and optionally replace columns in-place.
 - **🤗 Hugging Face Datasets**
   - Translate datasets from the Hub with support for subsets/configs, splits, and column type filters.
+- **🧾 Translation Metadata**
+  - Writes `translation_metadata.json` alongside outputs for reproducibility and traceability.
+- **🧰 HF Subset Management**
+  - Saves translated subsets as `<subset>-<lang>` and can merge them into a unified dataset.
+- **☁️ Hub Uploads**
+  - Optionally push translated HF datasets to the Hugging Face Hub.
 - **🌐 Proxy Support**
   - Supports HTTP/HTTPS proxies for network requests.
 
 ## ✋ Important Notes and Limitations
 
 - This project is not affiliated with Google.
-- This project mainly relies on [py-googletrans](https://github.com/ssut/py-googletrans#how-does-this-library-work) work for reverse-engineering the Google Translate API. More info on this [here](https://github.com/ssut/py-googletrans#how-does-this-library-work).
+- This project supports two backends: the unofficial web API via [py-googletrans](https://github.com/ssut/py-googletrans#how-does-this-library-work) and the official Google Cloud Translation API. The CLI is designed for feature parity across both.
 - To use Google Cloud Translation API, pass `--use-cloud-api` and ensure the Cloud Translation API is enabled for your project and credentials.
-- Maximum length per text is `15,000` characters.
-- Your IP may be at risk of being blocked by Google if you abuse the service. Use responsibly (or consider using a proxy; see `--proxy` option).
+- Maximum length per text is `15,000` characters for the unofficial Google Translate backend.
+- When using the unofficial backend, your IP may be at risk of being blocked by Google if you abuse the service. Use responsibly (or consider using a proxy; see `--proxy` option).
 
 ## Installation
 
@@ -77,9 +83,10 @@ You can omit the source language to auto-detect it:
 
 Each run creates a dedicated subdirectory under `save_dir` to prevent collisions:
 
-- `<save_dir>/<dataset>__<source>_to_<target>/translated_dataset.<format>` (use `auto` when source is auto-detected)
+- `<save_dir>/<dataset>__<source>_to_<target>/<dataset>_<target>.<format>` (use `auto` when source is auto-detected)
 - Checkpoints: `checkpoints/batches/checkpoint_XXXX.<format>`
 - Failures: `checkpoints/failures/translation_failures.csv` (or `.parquet` for parquet inputs)
+- Translation metadata: `translation_metadata.json`
 
 ### Key Options
 
@@ -108,9 +115,12 @@ If `source_lang` is omitted, it defaults to auto-detection.
 
 ### Hugging Face Datasets 🤗
 
-Translate datasets from the Hub by passing `--hf` and using the dataset name in place of the input path. Each split is translated into its own subdirectory under the run directory in `save_dir`.
+Translate datasets from the Hub by passing `--hf` and using the dataset name in place of the input path. Each translation run creates a new subset directory named `<subset>-<lang_code>` (or `<dataset_name>-<lang_code>` when no subset is provided) under `save_dir/<dataset_name>/`, saved as a Hugging Face dataset with translated splits.
 Downloads are cached locally in a shared sibling directory (`<save_dir>/../hf_cache`) and reused on resume.
-If `--output-file-format` is left as `auto`, HF outputs default to `jsonl`.
+Each translated subset includes a `translation_metadata.json` file with the configuration used for reproducibility.
+Checkpoints for each split are stored under `checkpoints/<split>` within the subset directory.
+If `--merge-translated-subsets` is used, a unified dataset is written to `save_dir/<dataset_name>/merged/` containing the original splits plus `<split>-<lang>` translated splits.
+When pushing merged datasets to the Hub, translated split names use underscores (`<split>_<lang>`) to satisfy Hub split naming rules.
 
 ```bash
 > dataset-translator imdb ./output en es \
@@ -128,10 +138,13 @@ Common HF options:
 | `--hf` | Treat the input path as a Hugging Face dataset name. |
 | `--subset \| --config` | Dataset subset/config name. |
 | `--split \| -s` | Split(s) to translate; can be provided multiple times. |
+| `--merge-translated-subsets` | Merge per-language translated subsets into a single dataset root with `<split>-<lang>` split names, keeping the original splits intact. |
+| `--push-to-hub` | Push translated HF dataset(s) to the Hub. Use `{lang}` placeholder in the repo ID name template for per-language outputs (omit `{lang}` when using `--merge-translated-subsets`). Missing repos are created automatically. If you omit the namespace, the logged-in user is used. |
+| `--hub-private` | Create/push the Hub repo as private (HF only). |
 
 ## Supported Languages
 
-Here is the list of languages that are supported (free of restrictions, without subscription) by the service at `translate.googleapis.com`:
+Here is the list of languages supported by the Google Translate backends.
 
 | Code     | Language                 |
 |----------|--------------------------|
