@@ -7,7 +7,8 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Protocol
 
-from .rate_limiters import SyncTokenBucketLimiter
+from src.rate_limiters import SyncTokenBucketLimiter
+
 
 @dataclass
 class TranslationResult:
@@ -271,7 +272,9 @@ class AlibabaTranslate:
             messages = [{"role": "user", "content": text}]
             if self._tpm_limiter:
                 token_count = self._estimate_tokens(messages)
-                self._tpm_limiter.acquire(token_count)
+                self._tpm_limiter.acquire(
+                    token_count * 2
+                )  # input + output (approx. translation length)
             response = self._completion(
                 messages=messages,
                 translation_options={
@@ -300,6 +303,7 @@ class AlibabaTranslate:
                 messages=kwargs.pop("messages"),
                 api_key=self._api_key,
                 api_base=self._base_url,
+                num_retries=0,
                 **kwargs,
             )
         except Exception as exc:
@@ -336,9 +340,7 @@ class AlibabaTranslate:
         try:
             parsed = int(value)
         except ValueError as exc:
-            raise ValueError(
-                "tokens_per_minute must be an integer."
-            ) from exc
+            raise ValueError("tokens_per_minute must be an integer.") from exc
         return parsed if parsed > 0 else None
 
 
@@ -395,9 +397,8 @@ class YandexTranslate:
         self._iam_token = iam_token or os.getenv("YANDEX_IAM_TOKEN")
         self._folder_id = folder_id or os.getenv("YANDEX_FOLDER_ID")
         self._endpoint = (
-            (endpoint or "").strip()
-            or "https://translate.api.cloud.yandex.net/translate/v2/translate"
-        )
+            endpoint or ""
+        ).strip() or "https://translate.api.cloud.yandex.net/translate/v2/translate"
         self._timeout = int(timeout) if timeout else 60
 
     async def translate(
@@ -423,8 +424,7 @@ class YandexTranslate:
         response = self._post_json(payload)
         translations = response.get("translations", [])
         return [
-            TranslationResult(item.get("text", ""))
-            for item in translations
+            TranslationResult(item.get("text", "")) for item in translations
         ]
 
     def _ensure_api_key(self) -> None:
@@ -457,15 +457,11 @@ class YandexTranslate:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(
-                req, timeout=self._timeout
-            ) as response:
+            with urllib.request.urlopen(req, timeout=self._timeout) as response:
                 data = response.read().decode("utf-8")
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", "ignore")
-            raise RuntimeError(
-                f"Yandex Translate API error: {detail}"
-            ) from exc
+            raise RuntimeError(f"Yandex Translate API error: {detail}") from exc
         except urllib.error.URLError as exc:
             raise RuntimeError(
                 f"Yandex Translate API request failed: {exc}"
