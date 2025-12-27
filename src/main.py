@@ -1415,12 +1415,12 @@ async def translate_hf_dataset_entry(
                     hub_dict.push_to_hub(
                         repo_id,
                         private=hub_private,
-                        config_name="merged",
+                        config_name="default",
                     )
                     upload_metadata_to_hub(
                         repo_id,
                         merged_dir / "translation_metadata.json",
-                        path_in_repo="translation_metadata_merged.json",
+                        path_in_repo="translation_metadata.json",
                     )
                 return
         for split_name, dataset in datasets_dict.items():
@@ -1455,12 +1455,12 @@ async def translate_hf_dataset_entry(
             hub_dict.push_to_hub(
                 repo_id,
                 private=hub_private,
-                config_name="merged",
+                config_name="default",
             )
             upload_metadata_to_hub(
                 repo_id,
                 merged_dir / "translation_metadata.json",
-                path_in_repo="translation_metadata_merged.json",
+                path_in_repo="translation_metadata.json",
             )
 
 
