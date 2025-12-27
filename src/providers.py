@@ -223,7 +223,7 @@ class AlibabaTranslate:
       - Beijing region: https://dashscope.aliyuncs.com/compatible-mode/v1
 
     Model:
-      - options: model (default: qwen-mt-turbo)
+      - options: model (default: qwen-mt-flash)
 
     Limits:
       - options: tokens_per_minute (or tpm)
@@ -241,7 +241,7 @@ class AlibabaTranslate:
         self._base_url = (
             base_url or ""
         ).strip() or "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
-        self._model = (model or "qwen-mt-turbo").strip() or "qwen-mt-turbo"
+        self._model = (model or "qwen-mt-flash").strip() or "qwen-mt-flash"
         self._timeout = int(timeout) if timeout else 60
         self._tpm_limit = self._parse_positive_int(tokens_per_minute)
         self._tpm_limiter = (
