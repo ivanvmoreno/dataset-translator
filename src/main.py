@@ -257,11 +257,6 @@ def save_dataset(df: pd.DataFrame, path: Path, file_format: str) -> None:
     raise ValueError(f"Unknown format {file_format}")
 
 
-def is_file_path(path: str) -> bool:
-    p = Path(path)
-    return p.suffix != "" or (p.name != "" and "." in p.name)
-
-
 def load_protected_words(protected_words_arg: Optional[str]) -> List[str]:
     if not protected_words_arg:
         return []
@@ -381,20 +376,26 @@ async def process_batch(
 
     if not items_to_translate:
         return successes, failures
-    if char_rate_limiter:
-        total_chars = sum(len(text) for text in items_to_translate)
-        if total_chars > 0:
-            await char_rate_limiter.acquire(total_chars)
-
     translations = []
     for attempt in range(max_retries):
         try:
+            if char_rate_limiter:
+                total_chars = sum(len(text) for text in items_to_translate)
+                if total_chars > 0:
+                    await char_rate_limiter.acquire(total_chars)
+
             if rate_limiter:
                 await rate_limiter.acquire()
 
             translations = await translator.translate(
                 items_to_translate, src=source_lang, dest=target_lang
             )
+
+            if len(translations) != len(items_to_translate):
+                raise RuntimeError(
+                    f"Provider returned {len(translations)} translations "
+                    f"for {len(items_to_translate)} inputs."
+                )
             break
         except Exception as e:
             log_debug(
@@ -1226,6 +1227,12 @@ async def translate_hf_dataset_entry(
                 "Pushing multiple target languages to a single repo; "
                 "each language will be stored as a separate config."
             )
+    elif push_to_hub and merge_translated_subsets:
+        print(
+            "Merge enabled: skipping individual subset uploads to Hub. "
+            "Only the final merged dataset will be pushed."
+        )
+
     original_label = (
         source_lang if source_lang and source_lang != "auto" else "original"
     )
@@ -1266,7 +1273,7 @@ async def translate_hf_dataset_entry(
             "translator_version": get_version() or "development",
         }
         write_translation_metadata(original_meta_path, original_meta)
-        if push_to_hub:
+        if push_to_hub and not merge_translated_subsets:
             repo_id = push_to_hub.replace("{lang}", original_label)
             repo_id = ensure_hub_repo(repo_id, hub_private)
             original_dict.push_to_hub(
@@ -1362,7 +1369,7 @@ async def translate_hf_dataset_entry(
             write_translation_metadata(
                 subset_dir / "translation_metadata.json", metadata
             )
-            if push_to_hub:
+            if push_to_hub and not merge_translated_subsets:
                 repo_id = push_to_hub.replace("{lang}", lang)
                 repo_id = ensure_hub_repo(repo_id, hub_private)
                 hub_config_name = sanitize_run_label(lang)
