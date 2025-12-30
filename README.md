@@ -48,7 +48,7 @@ A robust CLI tool for translating text columns in datasets using pluggable trans
 ## ✋ Important Notes and Limitations
 
 - This project is not affiliated with Google.
-- This project ships with several providers, including the unofficial web API via [py-googletrans](https://github.com/ssut/py-googletrans#how-does-this-library-work), the official Google Cloud Translation API, Alibaba Cloud Model Studio (Qwen-MT), and Yandex Cloud Translate.
+- This project ships with several providers, including the unofficial web API via [py-googletrans](https://github.com/ssut/py-googletrans#how-does-this-library-work), the official Google Cloud Translation API, Alibaba Cloud Model Studio (Qwen-MT), Yandex Cloud Translate, and OpenAI-compatible chat completion endpoints.
 - To use Google Cloud Translation API, pass `--provider google_cloud` and ensure the Cloud Translation API is enabled for your project and credentials.
 - Maximum length per text is `15,000` characters for the unofficial Google Translate backend.
 - When using the unofficial backend, your IP may be at risk of being blocked by Google if you abuse the service. Use responsibly (or consider using a proxy; see `--proxy` option).
@@ -119,7 +119,9 @@ If `source_lang` is omitted, it defaults to auto-detection.
 | `--help` | Show help message and exit. |
 
 Provider notes:
+- Google Cloud Translate: pass `--provider google_cloud`. Optional options include `api_endpoint` (useful for compatible servers), `api_key`, and `anonymous` (or `no_auth`) to disable credentials. For the bundled `server.py`, use `--provider-option api_endpoint=http://localhost:8000` and `--provider-option anonymous=true`.
 - Alibaba Cloud Model Studio (Qwen-MT): install with `pip install "dataset-translator[alibaba]"`, then pass `--provider alibaba` and set `DASHSCOPE_API_KEY` (or use `--provider-option api_key=...`). Optional options include `base_url` (default `https://dashscope-intl.aliyuncs.com/compatible-mode/v1`), `model` (default `qwen-mt-turbo`), `timeout`, and `tokens_per_minute` (or `tpm`).
+- OpenAI-compatible endpoint: pass `--provider openai_compatible` and set `OPENAI_COMPAT_API_KEY` if required (or use `--provider-option api_key=...`). Required options include `model` (or `OPENAI_COMPAT_MODEL`). Optional options include `base_url` (default `http://localhost:8000/v1`), `timeout`, `temperature`, `max_tokens`, `system_prompt`, and `batch` (send JSON list in the user message; requires server support).
 - Yandex Cloud Translate: pass `--provider yandex` and set `YANDEX_API_KEY` or `YANDEX_IAM_TOKEN` (or use `--provider-option api_key=...` / `--provider-option iam_token=...`). `folder_id` (or `YANDEX_FOLDER_ID`) is required. Optional options include `endpoint` and `timeout`. Ensure the identity has the `ai.translate.user` role for the folder.
 
 ### Hugging Face Datasets 🤗

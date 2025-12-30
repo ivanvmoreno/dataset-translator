@@ -22,6 +22,7 @@ license = { text = "MIT" }
 [project.optional-dependencies]
 hf = ["datasets"]
 alibaba = ["litellm"]
+openai_compatible = ["litellm"]
 google_cloud = ["google-cloud-translate>=3.23.0"]
 google_trans = ["googletrans"]
 
@@ -48,8 +49,11 @@ requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["src"]
 license-files = []
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
 
 [tool.setuptools.data-files]
 "share/man/man1" = ["docs/dataset-translator.1"]

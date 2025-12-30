@@ -1587,6 +1587,15 @@ def main(
     provider_options = parse_provider_options(provider_option)
     if proxy and "proxy" not in provider_options:
         provider_options["proxy"] = proxy
+    if (
+        provider.strip().lower() == "openai_compatible"
+        and normalize_source_lang(source_lang) == "auto"
+    ):
+        print(
+            "Warning: OpenAI-compatible providers may not support auto "
+            "language detection. Specify --source-lang to avoid errors.",
+            file=sys.stderr,
+        )
     translator = build_translator(provider, provider_options)
     rate_limiter = (
         AsyncTokenBucketLimiter(rate_limit_per_sec, capacity=1)

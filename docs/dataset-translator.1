@@ -152,7 +152,8 @@ API via \c
 py\-googletrans
 .UE \c
 , the official Google Cloud Translation API, Alibaba Cloud Model Studio
-(Qwen\-MT), and Yandex Cloud Translate.
+(Qwen\-MT), Yandex Cloud Translate, and OpenAI\-compatible chat
+completion endpoints.
 .IP \(bu 2
 To use Google Cloud Translation API, pass
 \f[CR]\-\-provider google_cloud\f[R] and ensure the Cloud Translation
@@ -338,7 +339,15 @@ Show help message and exit.
 T}
 .TE
 .PP
-Provider notes: \- Alibaba Cloud Model Studio (Qwen\-MT): install with
+Provider notes: \- Google Cloud Translate: pass
+\f[CR]\-\-provider google_cloud\f[R].
+Optional options include \f[CR]api_endpoint\f[R] (useful for compatible
+servers), \f[CR]api_key\f[R], and \f[CR]anonymous\f[R] (or
+\f[CR]no_auth\f[R]) to disable credentials.
+For the bundled \f[CR]server.py\f[R], use
+\f[CR]\-\-provider\-option api_endpoint=http://localhost:8000\f[R] and
+\f[CR]\-\-provider\-option anonymous=true\f[R].
+\- Alibaba Cloud Model Studio (Qwen\-MT): install with
 \f[CR]pip install \(dqdataset\-translator[alibaba]\(dq\f[R], then pass
 \f[CR]\-\-provider alibaba\f[R] and set \f[CR]DASHSCOPE_API_KEY\f[R] (or
 use \f[CR]\-\-provider\-option api_key=...\f[R]).
@@ -347,6 +356,17 @@ Optional options include \f[CR]base_url\f[R] (default
 \f[CR]model\f[R] (default \f[CR]qwen\-mt\-turbo\f[R]),
 \f[CR]timeout\f[R], and \f[CR]tokens_per_minute\f[R] (or
 \f[CR]tpm\f[R]).
+\- OpenAI\-compatible endpoint: pass
+\f[CR]\-\-provider openai_compatible\f[R] and set
+\f[CR]OPENAI_COMPAT_API_KEY\f[R] if required (or use
+\f[CR]\-\-provider\-option api_key=...\f[R]).
+Required options include \f[CR]model\f[R] (or
+\f[CR]OPENAI_COMPAT_MODEL\f[R]).
+Optional options include \f[CR]base_url\f[R] (default
+\f[CR]http://localhost:8000/v1\f[R]), \f[CR]timeout\f[R],
+\f[CR]temperature\f[R], \f[CR]max_tokens\f[R], \f[CR]system_prompt\f[R],
+and \f[CR]batch\f[R] (send JSON list in the user message; requires
+server support).
 \- Yandex Cloud Translate: pass \f[CR]\-\-provider yandex\f[R] and set
 \f[CR]YANDEX_API_KEY\f[R] or \f[CR]YANDEX_IAM_TOKEN\f[R] (or use
 \f[CR]\-\-provider\-option api_key=...\f[R] /
