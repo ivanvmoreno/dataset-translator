@@ -49,11 +49,35 @@ class GoogleCloudTranslate:
     def _translate_sync(
         self, texts: List[str], src: Optional[str], dest: str
     ) -> List[TranslationResult]:
+        from google.api_core.exceptions import BadRequest
+
         src_lang = normalize_source_lang(src)
         request = {"target_language": dest, "format_": "text"}
         if src_lang != "auto":
             request["source_language"] = src_lang
-        results = self.client.translate(texts, **request)
+        try:
+            results = self.client.translate(texts, **request)
+        except BadRequest as e:
+            error_details = str(e)
+            if hasattr(e, "response") and e.response is not None:
+                try:
+                    if hasattr(e.response, "text"):
+                        import json
+
+                        try:
+                            data = json.loads(e.response.text)
+                            if "detail" in data:
+                                error_details = (
+                                    f"Server Error: {data['detail']}"
+                                )
+                        except Exception:
+                            error_details = f"Server Error: {e.response.text}"
+                    elif hasattr(e.response, "content"):
+                        error_details = f"Server Error: {e.response.content.decode('utf-8', errors='replace')}"
+                except Exception:
+                    pass
+            raise Exception(error_details) from e
+
         if isinstance(texts, str):
             results = [results]
         return [
