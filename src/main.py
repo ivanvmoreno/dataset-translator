@@ -1219,7 +1219,7 @@ async def translate_hf_dataset_entry(
     overall = tqdm(total=total_jobs, desc="Overall Progress", position=0)
     dataset_root = save_dir / sanitize_run_label(dataset_name)
     dataset_root.mkdir(parents=True, exist_ok=True)
-    subset_label = subset or sanitize_run_label(dataset_name)
+    subset_label = subset or "default"
     merged_sources: List[Tuple[str, Path]] = []
     if push_to_hub and not merge_translated_subsets:
         if len(target_langs) > 1 and "{lang}" not in push_to_hub:
@@ -1236,7 +1236,11 @@ async def translate_hf_dataset_entry(
     original_label = (
         source_lang if source_lang and source_lang != "auto" else "original"
     )
-    original_subset = sanitize_run_label(original_label)
+    # If a subset is provided, prefix it to the original label to avoid collisions
+    full_original_label = (
+        f"{subset}-{original_label}" if subset else original_label
+    )
+    original_subset = sanitize_run_label(full_original_label)
     original_dir = dataset_root / original_subset
     original_dir.mkdir(parents=True, exist_ok=True)
     original_meta_path = original_dir / "translation_metadata.json"
@@ -1287,7 +1291,12 @@ async def translate_hf_dataset_entry(
                 path_in_repo=(f"translation_metadata_{original_subset}.json"),
             )
     for lang in target_langs:
-        translated_subset = f"{subset_label}-{lang}"
+        # Use subset name in translated subset label if provided
+        if subset:
+            translated_subset = f"{subset}-{lang}"
+        else:
+            translated_subset = lang
+        
         subset_dir = dataset_root / sanitize_run_label(translated_subset)
         subset_dir.mkdir(parents=True, exist_ok=True)
         merged_sources.append((lang, subset_dir))
@@ -1372,7 +1381,7 @@ async def translate_hf_dataset_entry(
             if push_to_hub and not merge_translated_subsets:
                 repo_id = push_to_hub.replace("{lang}", lang)
                 repo_id = ensure_hub_repo(repo_id, hub_private)
-                hub_config_name = sanitize_run_label(lang)
+                hub_config_name = sanitize_run_label(translated_subset)
                 translated_dict.push_to_hub(
                     repo_id,
                     private=hub_private,
@@ -1389,7 +1398,7 @@ async def translate_hf_dataset_entry(
 
     if merge_translated_subsets and merged_sources:
         merged_splits: Dict[str, Dataset] = {}
-        merged_dir = dataset_root / "merged"
+        merged_dir = dataset_root / sanitize_run_label(f"{subset_label}-merged")
         merged_meta = read_translation_metadata(
             merged_dir / "translation_metadata.json"
         )
@@ -1415,7 +1424,7 @@ async def translate_hf_dataset_entry(
                     hub_dict.push_to_hub(
                         repo_id,
                         private=hub_private,
-                        config_name="default",
+                        config_name=sanitize_run_label(subset_label),
                     )
                     upload_metadata_to_hub(
                         repo_id,
@@ -1455,7 +1464,7 @@ async def translate_hf_dataset_entry(
             hub_dict.push_to_hub(
                 repo_id,
                 private=hub_private,
-                config_name="default",
+                config_name=sanitize_run_label(subset_label),
             )
             upload_metadata_to_hub(
                 repo_id,
@@ -1532,7 +1541,7 @@ def main(
     hf_dataset: bool = typer.Option(
         False, "--hf", help="Treat input_path as Hugging Face dataset name"
     ),
-    subset: Optional[str] = typer.Option(None, "--subset", "--config"),
+    subset: Optional[List[str]] = typer.Option(None, "--subset", "--config"),
     splits: Optional[List[str]] = typer.Option(None, "--split", "-s"),
     hf_cache_dir: Optional[Path] = typer.Option(
         None, "--hf-cache-dir", help="Shared HF cache directory"
@@ -1565,6 +1574,7 @@ def main(
     protected = load_protected_words(protected_words)
     columns = normalize_list_arg(columns)
     splits = normalize_list_arg(splits)
+    subsets = normalize_list_arg(subset)
     filters = (
         normalize_column_types(column_types)
         if column_types
@@ -1632,20 +1642,22 @@ def main(
     if hf_dataset:
         if output_file_format == "auto":
             output_file_format = "jsonl"
-        asyncio.run(
-            translate_hf_dataset_entry(
-                dataset_name=str(input_path),
-                save_dir=save_dir,
-                output_file_format=output_file_format,
-                subset=subset,
-                splits=splits,
-                hf_cache_dir=hf_cache_dir,
-                merge_translated_subsets=merge_translated_subsets,
-                push_to_hub=push_to_hub,
-                hub_private=hub_private,
-                **common_kwargs,
+        subsets_to_process = subsets or [None]
+        for s in subsets_to_process:
+            asyncio.run(
+                translate_hf_dataset_entry(
+                    dataset_name=str(input_path),
+                    save_dir=save_dir,
+                    output_file_format=output_file_format,
+                    subset=s,
+                    splits=splits,
+                    hf_cache_dir=hf_cache_dir,
+                    merge_translated_subsets=merge_translated_subsets,
+                    push_to_hub=push_to_hub,
+                    hub_private=hub_private,
+                    **common_kwargs,
+                )
             )
-        )
     else:
         if file_format == "auto":
             if input_path.suffix == ".csv":
